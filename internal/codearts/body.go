@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"wild-work/internal/upstream"
 )
 
 // 出站 max_tokens 的缺省与上限（协议 §2.3）。
@@ -104,6 +106,12 @@ func buildChatBody(body []byte, model string, sessionID string) ([]byte, error) 
 	delete(obj, "reasoning")
 
 	if msgs, ok := obj["messages"].([]any); ok {
+		// 上游 role 白名单不含 developer（OpenAI Responses API 的专有 role）。
+		// 客户端（如开了 reasoning 的 pi）把 system 指令发成 developer 时，
+		// 上游会丢掉那条消息并回 "Message role cannot empty"。
+		// 本渠道不复用 upstream.PrepareBody，故在此显式调 NormalizeRoles。
+		upstream.NormalizeRoles(obj)
+		msgs, _ = obj["messages"].([]any)
 		msgs = normalizeMessages(msgs)
 		if isDSMLModel(model) {
 			msgs = applyDSML(msgs, obj)

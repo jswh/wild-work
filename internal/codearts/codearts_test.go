@@ -994,6 +994,31 @@ func TestChatBodyDefaults(t *testing.T) {
 	}
 }
 
+// TestChatBodyNormalizesDeveloperRole developer role 必须归一为 system。
+//
+// 上游（InferHub/ModelArts）role 白名单不含 developer：收到 developer 就丢掉该条
+// 并回 "Message role cannot empty"。开了 reasoning 的 pi 会把 system 指令发成
+// developer，故本渠道必须显式归一。
+func TestChatBodyNormalizesDeveloperRole(t *testing.T) {
+	in := `{"model":"GLM-5.2","messages":[{"role":"developer","content":"sys"},{"role":"user","content":"x"}]}`
+	out, err := buildChatBody([]byte(in), "GLM-5.2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatal(err)
+	}
+	msgs := obj["messages"].([]any)
+	first := msgs[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Errorf("developer role 必须归一为 system，实际 %v", first["role"])
+	}
+	if second := msgs[1].(map[string]any); second["role"] != "user" {
+		t.Errorf("其余 role 不得改动，实际 %v", second["role"])
+	}
+}
+
 // TestChatBodyStripsIneffectiveReasoning reasoning/reasoning_effort 剥离但保留 reasoning_summary。
 func TestChatBodyStripsIneffectiveReasoning(t *testing.T) {
 	in := `{"model":"GLM-5.2","reasoning_effort":"high","reasoning":{"effort":"low"},"reasoning_summary":"auto","messages":[{"role":"user","content":"x"}]}`
