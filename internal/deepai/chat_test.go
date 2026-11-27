@@ -11,6 +11,11 @@ import (
 	"testing"
 )
 
+// rewriteModelLine 是测试入口：等价于生产路径 rewriteModelReader 内部的逐帧改写。
+func rewriteModelLine(line []byte, model string) []byte {
+	return rewriteFrame(line, quotedJSON(model))
+}
+
 // sseReturn 构造一个只回固定 SSE 文本的假上游。
 func sseReturn(body string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

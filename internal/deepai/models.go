@@ -169,7 +169,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		return snapshotFallback("network", err), nil
 	}
 	if body == nil {
-		kind := classifyStatus(c, status, string(errBody))
+		kind := c.Classify(status, string(errBody))
 		if kind == provider.ErrSessionDead {
 			// 账号维度：让 server 层换号重试（R133），并把「凭据失效」如实上报（R76 自愈）。
 			return nil, &provider.Error{Kind: kind, Status: status, Msg: errorMessage(errBody)}

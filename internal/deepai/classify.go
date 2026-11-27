@@ -86,14 +86,6 @@ func (c *Client) Classify(status int, body string) provider.ErrKind {
 	return kind
 }
 
-// classifyStatus 是「渠道内部构造错误对象」时的统一入口。
-//
-// 3xx 的归一在 classifyKind 内部完成（handler 走的也是同一个入口），这里只是让调用方
-// 不必各自记得「3xx 也算失败」——两条路径对 3xx 的判据必须一致。
-func classifyStatus(client *Client, status int, body string) provider.ErrKind {
-	return client.Classify(status, body)
-}
-
 // hintFor 返回该次失败对应的「需要人类动作」提示（无则空串）。
 func hintFor(status int, body []byte) string {
 	_, hint := classifyKind(status, string(body))

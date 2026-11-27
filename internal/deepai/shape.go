@@ -39,30 +39,19 @@ func shapeRejectReason(status int, body []byte) string {
 	if status != 400 {
 		return ""
 	}
-	var probe struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    any    `json:"code"`
-		} `json:"error"`
-		Detail  string `json:"detail"`
-		Message string `json:"message"`
-	}
-	text := string(body)
-	if err := json.Unmarshal(body, &probe); err == nil {
-		for _, s := range []string{probe.Error.Message, probe.Detail, probe.Message} {
-			if s != "" {
-				text = s
-				break
-			}
-		}
-	}
+	// 一次解析拿全：文案走 errorMessage（与日志同一个提取器），码单独看 Error.Code。
+	text := errorMessage(body)
 	switch {
 	case strings.Contains(text, "This request is not one DeepAI Code sends."):
 		return "copy_old"
 	case strings.Contains(text, "This request cannot be accepted."):
 		return "copy_new"
 	}
-	// 文案再换也能兜住：只认 code。用 RawMessage 比较避免把数字码/嵌套码误读。
+	var probe struct {
+		Error struct {
+			Code any `json:"code"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(body, &probe); err == nil {
 		if code, ok := probe.Error.Code.(string); ok && code == "invalid_request_error" {
 			return "invalid_request_error"

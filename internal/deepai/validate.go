@@ -64,7 +64,7 @@ func (c *Client) ValidateKey(ctx context.Context, raw string) (string, error) {
 	}
 	if body == nil {
 		return "", &provider.Error{
-			Kind:   classifyStatus(c, status, string(errBody)),
+			Kind:   c.Classify(status, string(errBody)),
 			Status: status,
 			Msg:    keyRejectMessage(status, errBody),
 		}

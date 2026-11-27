@@ -202,11 +202,6 @@ func (m *modelRewriter) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// rewriteModelLine 是 rewriteFrame 的「按模型名」入口（单测与调试用）。
-func rewriteModelLine(line []byte, model string) []byte {
-	return rewriteFrame(line, quotedJSON(model))
-}
-
 // rewriteFrame 改写一行 SSE 里 `data:` 负载：回填 `model`、补 `reasoning_content`。
 //
 // 只动**对话增量帧**（负载是 JSON 且含顶层 `choices`）：`[DONE]`、`event:` 行、空行、
