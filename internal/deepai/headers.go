@@ -50,9 +50,11 @@ func applyHeaders(req *http.Request, a *auth.Auth, affinity string) {
 }
 
 // chatPeek 从（已预处理过的）请求体里取渠道需要的最小信息：
-// 只关心 `stream`（决定用流式还是非流式 client）。`model` 由调用方显式传入，不从这里取。
+// `stream`（决定用流式还是非流式 client）与 `model`（额度耗尽短路的键，上游模型 id）。
+// 客户端全串（`deepai/xxx`）已由 handler 拆成上游 id 再传进来，这里拿到的就是上游 id。
 type chatPeek struct {
-	Stream bool `json:"stream"`
+	Stream bool   `json:"stream"`
+	Model  string `json:"model"`
 }
 
 func peekChat(body []byte) chatPeek {

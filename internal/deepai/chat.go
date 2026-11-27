@@ -30,23 +30,54 @@ import (
 // host，网络问题与账号健康无关）。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []byte, error) {
 	prepared := upstream.PrepareBody(body)
-	stream := peekChat(prepared).Stream
+	peek := peekChat(prepared)
 	affinity := affinityOf(a, prepared)
 
-	rc, status, errBody, err := c.chatOnce(a, prepared, stream, affinity)
+	// 计量模型额度耗尽短路（spec §5）：恢复点之前不再打上游，直接回合成的 403。
+	// 走合成体而不是 error，是为了让 handler 的 Classify 归到 ErrSoftRate（模型级冷却 +
+	// 同请求内换号）。免费模型永远收不到 theos_exhausted，所以这里天然只拦计量模型。
+	if synthetic, hit := c.shortCircuit(a, peek.Model); hit {
+		return nil, http.StatusForbidden, synthetic, nil
+	}
+
+	rc, status, errBody, err := c.chatOnce(a, prepared, peek.Stream, affinity)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	if reason := shapeRejectReason(status, errBody); reason != "" {
 		// 首因必须留痕：否则「第一次被拒过一次」这件事在生产日志里完全不可见。
 		log.Printf("deepai shape fallback uid=%s status=%d reason=%s", uidOf(a), status, reason)
-		return c.chatOnce(a, reshapeBody(prepared), stream, affinity)
+		rc, status, errBody, err := c.chatOnce(a, reshapeBody(prepared), peek.Stream, affinity)
+		c.recordOutcome(a, peek.Model, status, errBody)
+		return rc, status, errBody, err
 	}
 	if hint := hintFor(status, errBody); hint != "" {
 		// 车道失配 / 漏发机器指纹这类「要人动手」的错误，日志必须醒目且带 uid。
 		log.Printf("deepai chat rejected uid=%s status=%d %s err=%s", uidOf(a), status, hint, errorMessage(errBody))
 	}
+	c.recordOutcome(a, peek.Model, status, errBody)
 	return rc, status, errBody, nil
+}
+
+// recordOutcome 用一次对话的结果推进账号状态（两项都只做「锦上添花」，不影响返回值）：
+//   - 成功 ⇒ 记一次转发时刻（beacon 的 `pi` 字段据此判断客户端是否真在用）；
+//   - 403 计量额度耗尽 ⇒ 在恢复点之前对该 (账号, 模型) 本地短路。
+func (c *Client) recordOutcome(a *auth.Auth, model string, status int, body []byte) {
+	uid := uidOf(a)
+	if status < 300 && status > 0 {
+		c.markRelay(uid)
+		return
+	}
+	if status != http.StatusForbidden || !isTheosExhausted(body) {
+		return
+	}
+	st := c.stateOf(uid)
+	c.states.mu.Lock()
+	until := st.refreshAt
+	c.states.mu.Unlock()
+	if !c.noteExhausted(uid, model, until) {
+		log.Printf("deepai theos exhausted uid=%s model=%s 恢复点未知（尚未成功探测 /theos），本次不记短路", uid, model)
+	}
 }
 
 // chatOnce 发一次对话请求（不含任何重试逻辑）。

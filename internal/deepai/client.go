@@ -20,6 +20,13 @@ type Client struct {
 	HTTP       *http.Client
 	StreamHTTP *http.Client
 	idle       time.Duration
+
+	// started 进程内起点（beacon 的 `up=` 用）；零值按「刚启动」处理。
+	started time.Time
+	// states 单账号的签到 / 余额 / 转发状态（进程内，见 checkin.go）。
+	states states
+	// exhaust 计量模型额度耗尽短路表（见 shortcircuit.go）。
+	exhaust exhausts
 }
 
 // New 按默认超时构造客户端（`upstream.timeout_seconds` 的接线在 main 装配处）。
@@ -31,7 +38,7 @@ func NewWithTimeout(requestTimeout time.Duration) *Client {
 		requestTimeout = defaultRequestTimeout
 	}
 	transport := newTransport()
-	return &Client{
+	cl := &Client{
 		Origin: DefaultOrigin,
 		HTTP: &http.Client{
 			Transport: transport,
@@ -39,6 +46,7 @@ func NewWithTimeout(requestTimeout time.Duration) *Client {
 			// 上游鉴权失败时是 302 跳到登录页：跟随只会把「凭据失效」伪装成 200 的 HTML。
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
+		started: time.Now(),
 		// 流式：不设 Timeout（R35），与 HTTP 共用 Transport。
 		StreamHTTP: &http.Client{
 			Transport:     transport,
@@ -46,6 +54,9 @@ func NewWithTimeout(requestTimeout time.Duration) *Client {
 		},
 		idle: defaultIdleTimeout,
 	}
+	cl.states.m = make(map[string]*acctState)
+	cl.exhaust.m = make(map[string]time.Time)
+	return cl
 }
 
 // IdleTimeout 返回实际生效的流中空闲上限（零值客户端退回默认，供测试与日志断言）。

@@ -760,6 +760,12 @@ type ResourceItem struct {
 	// 该渠道渲染成「Token 计数」面板，并与积分**分开统计**（不并入积分合计）。
 	// 零值（空串）保持既有语义 = 积分，向后兼容。
 	Unit string `json:"unit,omitempty"`
+	// Raw 上游下发的**原始数值串**（仅展示用，不参与任何算术）。
+	//
+	// 为什么需要：有的渠道余额是字符串浮点（DeepAI 的 `balance:"-7.58"`），面板按 int64
+	// 展示会四舍五入掉小数；把原始串放进明细行的 tooltip，用户才能和官网对上数字。
+	// 只有确实有「原始串」语义的渠道才填，其余留空（前端据此不渲染 tooltip）。
+	Raw string `json:"raw,omitempty"`
 }
 
 // Summarize 按 Usable 标记汇总条目：返回 (可消耗剩余, 不可消耗剩余)。
