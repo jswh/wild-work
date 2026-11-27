@@ -221,3 +221,29 @@ func TestModelRewriterStreamingOrder(t *testing.T) {
 		t.Fatalf("空行（帧分隔符）必须保留：%q", lines[1])
 	}
 }
+
+// TestChatStreamRedirectIsErrorStatus 302（Key 失效跳登录页）必须当失败回传，
+// 不得把 HTML 登录页当 SSE 流读（否则空 delta + 永冷却不下来的账号）。
+func TestChatStreamRedirectIsErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://api.deepai.org/login")
+		w.WriteHeader(http.StatusFound)
+		_, _ = io.WriteString(w, "<html>login</html>")
+	}))
+	defer srv.Close()
+	c := New()
+	c.Origin = srv.URL
+	rc, status, errBody, err := c.ChatStream(testAuth("dai-a", "k", ""), []byte(`{"messages":[]}`))
+	if err != nil {
+		t.Fatalf("3xx 不得返回传输层 error（要交给 handler 分类）：%v", err)
+	}
+	if rc != nil || status != http.StatusFound {
+		t.Fatalf("rc=%v status=%d，期望 nil/302", rc, status)
+	}
+	if !strings.Contains(string(errBody), "login") {
+		t.Fatalf("错误体未透传：%q", string(errBody))
+	}
+	if got := c.Classify(status, string(errBody)).String(); got != "session_dead" {
+		t.Fatalf("302 应归 session_dead，got %s", got)
+	}
+}

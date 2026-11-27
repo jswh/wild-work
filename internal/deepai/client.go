@@ -85,14 +85,18 @@ func (c *Client) newRequest(ctx context.Context, method, path string, a *auth.Au
 	return req, nil
 }
 
-// do 发一次请求并读错误体：状态码 ≥400 时返回 (nil, status, body, nil)，
+// do 发一次请求并读错误体：状态码 ≥300 时返回 (nil, status, body, nil)，
 // 由调用方（或 handler 的 Classify）决定处置——上游 ≥400 一律原样透传（不变量 8）。
+//
+// 门槛取 **300** 而不是 400：本渠道用 `ErrUseLastResponse` 拦住了跳转（见 New），
+// 而上游在 Key 失效时的实际形态是 **302 跳登录页**——不把 3xx 当失败就会把一个
+// HTML 登录页当成功响应解析（表现为「空目录 ⇒ 静默退回快照」，凭据失效彻底不可见）。
 func (c *Client) do(req *http.Request, client *http.Client) (io.ReadCloser, int, []byte, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 		return nil, resp.StatusCode, errBody, nil
