@@ -1725,7 +1725,12 @@ const regexOk = (re) => re.test(raw);
     // 汇总条顺序必须是**派生**的：把 CH_LABEL 与派生的序按同一表达式重算一遍再比对位置，
     // 免得「断言写在文档里、表达式早就改成手写数组」这条静默漂移。
     const expr = (raw.match(/const CH_SUMMARY_ORDER = ([\s\S]*?);\n/) || [])[1] || "[]";
-    const order = new Function("CH_LABEL", "chLabel", `return (${expr});`)(label99, (k) => label99[k] || k);
+    // 求值失败**不能**让整个脚本崩掉（results 在本块之后才统一打印，抛异常会让其余断言全部
+    // 静默消失）⇒ 兜成空数组，让下面的位置断言自己报红。
+    let order = [];
+    try {
+      order = new Function("CH_LABEL", "chLabel", `return (${expr});`)(label99, (k) => label99[k] || k);
+    } catch { order = []; }
     const i = order.indexOf("deepai");
     // 位置判据用**相邻渠道**而不是写死「在 doubao 之前」：豆包的中文显示名（`豆包`）
     // 按字节序排在所有 ASCII 名之后，所以 deepai 的实际邻居是 codearts / gemini
