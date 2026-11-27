@@ -33,6 +33,16 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 	peek := peekChat(prepared)
 	affinity := affinityOf(a, prepared)
 
+	// 出口配置错误：**不**打到上游、也不静默退回直连（票 06 的验收口径：悄悄直连会让
+	// 用户以为自己在用独立出口，实际所有号挤在同一 IP 上）。回合成的 400 让 handler
+	// 走 Classify ⇒ ErrAccountFault（换号 + 面板可见），而不是当成网络抖动透传。
+	if _, perr := NormalizeProxy(proxyOf(a)); perr != nil {
+		log.Printf("deepai 出口配置有误 uid=%s proxy=%s err=%v（拒绝直连）",
+			uidOf(a), proxyHostOnlyBestEffort(proxyOf(a)), perr)
+		return nil, http.StatusBadRequest, []byte(
+			`{"error":{"code":"proxy_misconfigured","message":"该账号的出口（代理）配置有误，已拒绝直连：请到「账号设置」改正或清空出口"}}`), nil
+	}
+
 	// 计量模型额度耗尽短路（spec §5）：恢复点之前不再打上游，直接回合成的 403。
 	// 走合成体而不是 error，是为了让 handler 的 Classify 归到 ErrSoftRate（模型级冷却 +
 	// 同请求内换号）。免费模型永远收不到 theos_exhausted，所以这里天然只拦计量模型。

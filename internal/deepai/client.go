@@ -37,7 +37,7 @@ func NewWithTimeout(requestTimeout time.Duration) *Client {
 	if requestTimeout <= 0 {
 		requestTimeout = defaultRequestTimeout
 	}
-	transport := newTransport()
+	transport := newTransport() // http.RoundTripper（按账号分派，见 proxy.go）
 	cl := &Client{
 		Origin: DefaultOrigin,
 		HTTP: &http.Client{
@@ -67,8 +67,21 @@ func (c *Client) IdleTimeout() time.Duration {
 	return defaultIdleTimeout
 }
 
-// newTransport 建标准连接池（与其它渠道同口径，不启用 HTTP/2 强制）。
-func newTransport() *http.Transport {
+// newTransport 建「按账号选出口」的分派层（见 proxy.go）：
+// 无账号 / 账号无代理 ⇒ 直连（跟随环境代理，NO_PROXY 由 ProxyFromEnvironment 处理）；
+// 有代理 ⇒ 该账号独占一个 Transport（连接池按出口隔离）。
+//
+// 刻意**不**给每个账号懒建 *http.Client：devdump 在启动期按 client 实例套采样器
+// （cmd/wild-work/transport.go 的 wrapDumps，静态测试锁死那张表），懒建的 client
+// 永远套不上采样（spec §9 / 票 06 锚点）。
+func newTransport() http.RoundTripper {
+	return newAccountTransport(baseTransport())
+}
+
+// baseTransport 建标准连接池（与其它渠道同口径，不启用 HTTP/2 强制）。
+//
+// 每次调用都返回**新实例**：分派层给「有代理」的账号各克隆一份，连接池因此天然按出口隔离。
+func baseTransport() *http.Transport {
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -88,7 +101,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, a *auth.Au
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.Origin+path, rd)
+	req, err := http.NewRequestWithContext(withAccount(ctx, a), method, c.Origin+path, rd)
 	if err != nil {
 		return nil, err
 	}

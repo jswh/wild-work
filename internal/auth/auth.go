@@ -55,7 +55,14 @@ type Auth struct {
 	// base_url / account_id / user_id / access_key / secret_key / security_token /
 	// project_id / cred_expires / dpop_priv / region 等，均以字符串保存。
 	// 只增不减、向后兼容（旧凭证无该字段 → nil，各渠道自行判空）。仅该类渠道使用。
-	Extra        map[string]string `json:"extra,omitempty"`
+	Extra map[string]string `json:"extra,omitempty"`
+	// Proxy 该账号的**出口**（账号级代理，空 = 直连 / 跟随环境代理）。
+	//
+	// 与 config.proxy（R57 的全局备用上游通道，只在渠道命中地区拒绝时按需取用）
+	// **不是一回事**：这里表达的是「这个账号从哪个 IP 出去」，例如住宅 IP 到期换一个。
+	// 目前只有 deepai 用（见 internal/deepai/proxy.go）；其它渠道读出非空值也不会误用
+	// （它们的 Transport 不读该字段）。只增字段，旧文件读出为空串（不变量 5）。
+	Proxy        string `json:"proxy,omitempty"`
 	UID          string
 	EnterpriseID string
 	Nickname     string
@@ -154,6 +161,8 @@ func Parse(raw []byte) (*Auth, error) {
 				Cookies map[string]string `json:"cookies"`
 				// extra 渠道扩展凭据袋（officeace 等；其余渠道空）
 				Extra map[string]string `json:"extra"`
+				// proxy 该账号的出口（账号级代理，空 = 直连 / 跟随环境代理）
+				Proxy string `json:"proxy"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -183,6 +192,7 @@ func Parse(raw []byte) (*Auth, error) {
 			// Cookies 仅 chatgpt 非空
 			Cookies:      n.Auth.Cookies,
 			Extra:        n.Auth.Extra,
+			Proxy:        n.Auth.Proxy,
 			UID:          n.Account.UID,
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
@@ -207,10 +217,12 @@ func Parse(raw []byte) (*Auth, error) {
 			// cookies 是整组网页会话 Cookie（仅 chatgpt 渠道用；其余渠道空）
 			Cookies map[string]string `json:"cookies"`
 			// extra 渠道扩展凭据袋（officeace 等；其余渠道空）
-			Extra        map[string]string `json:"extra"`
-			UID          string            `json:"uid"`
-			EnterpriseID string            `json:"enterpriseId"`
-			Nickname     string            `json:"nickname"`
+			Extra map[string]string `json:"extra"`
+			// proxy 该账号的出口（账号级代理，空 = 直连 / 跟随环境代理）
+			Proxy        string `json:"proxy"`
+			UID          string `json:"uid"`
+			EnterpriseID string `json:"enterpriseId"`
+			Nickname     string `json:"nickname"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -231,6 +243,7 @@ func Parse(raw []byte) (*Auth, error) {
 			BaizhiCookie:  f.BaizhiCookie,
 			Cookies:       f.Cookies,
 			Extra:         f.Extra,
+			Proxy:         f.Proxy,
 			UID:           f.UID,
 			EnterpriseID:  f.EnterpriseID,
 			Nickname:      f.Nickname,
@@ -277,6 +290,8 @@ func (a *Auth) saveAtomicLocked() error {
 			"cookies": a.Cookies,
 			// extra 仅 officeace 等扩展渠道非空；其余渠道写空 map 无副作用
 			"extra": a.Extra,
+			// proxy 该账号的出口（空串 = 直连 / 跟随环境代理）
+			"proxy": a.Proxy,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,

@@ -42,6 +42,10 @@ func classifyKind(status int, body string) (provider.ErrKind, string) {
 	case status == 426 || has("lane_version_unsupported"):
 		// 车道不匹配是**本工具的常量过期**，与账号健康无关：原文透传、不罚号不轮转。
 		return provider.ErrPassthrough, "车道版本不被上游接受（lane_version_unsupported）：需要升级本工具的 deepai 车道常量（constants.go 的 LaneVersion），不是账号问题"
+	case has("proxy_misconfigured"):
+		// 账号的出口（代理）配置有误：**本工具侧**配置问题，不是上游行为。
+		// 归账号级错误是为了让 handler 换号/停手，同时**绝不**退回直连（票 06）。
+		return provider.ErrAccountFault, "账号出口（代理）配置有误：请在「账号设置」里改正或清空出口"
 	case has("machine_required"):
 		// 上游要求机器指纹而本工具没发出来 ⇒ 是我们的 bug。归账号级错误会去罚一个健康账号，
 		// 掩盖真正的故障点；这里按账号级分类但**必须**有醒目日志指向漏发头。
