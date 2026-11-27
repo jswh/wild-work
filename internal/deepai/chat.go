@@ -43,7 +43,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 	}
 	if resp.StatusCode >= 300 {
 		cancel()
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 		// 上游 ≥400 原样透传（不变量 8）；3xx 同样是失败（ErrUseLastResponse 拦住了跳转，
 		// 上游 Key 失效时就是 302 跳登录页）——否则会把一个 HTML 登录页当 SSE 读。

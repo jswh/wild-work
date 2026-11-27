@@ -98,7 +98,7 @@ func (c *Client) do(req *http.Request, client *http.Client) (io.ReadCloser, int,
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		return nil, resp.StatusCode, errBody, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

@@ -69,8 +69,9 @@ const (
 	// defaultRequestTimeout 非流式请求的总超时上限（`upstream.timeout_seconds` 兜底）。
 	// 流式 client **不设**总超时（R35）。
 	defaultRequestTimeout = 120 * time.Second
-	// maxErrBody 上游错误体读取上限（够放下 OpenAI 风格错误体 + 可读提示）。
-	maxErrBody = 1 << 20
+	// maxResponseBytes 单次响应体的读取上限：错误体（够放下 OpenAI 风格错误体与可读提示）
+	// 与模型目录（28 条，≈20 KB）共用同一个闸，避免各路径各写一个魔数。
+	maxResponseBytes = 1 << 20
 )
 
 // FarFutureExpiry 返回远期过期时间（+80 年）。

@@ -161,12 +161,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 	}
 	req, err := c.newRequest(context.Background(), http.MethodGet, PathModels, a, nil, "")
 	if err != nil {
-		return c.snapshotFallback("request", err), nil
+		return snapshotFallback("request", err), nil
 	}
 	body, status, errBody, err := c.do(req, c.HTTP)
 	if err != nil {
 		// 传输层错误：同渠道所有账号打的是同一个 host，换号没有意义。
-		return c.snapshotFallback("network", err), nil
+		return snapshotFallback("network", err), nil
 	}
 	if body == nil {
 		kind := classifyStatus(c, status, string(errBody))
@@ -174,16 +174,16 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			// 账号维度：让 server 层换号重试（R133），并把「凭据失效」如实上报（R76 自愈）。
 			return nil, &provider.Error{Kind: kind, Status: status, Msg: errorMessage(errBody)}
 		}
-		return c.snapshotFallback(fmt.Sprintf("http_%d", status), errors.New(errorMessage(errBody))), nil
+		return snapshotFallback(fmt.Sprintf("http_%d", status), errors.New(errorMessage(errBody))), nil
 	}
 	defer body.Close()
-	raw, err := io.ReadAll(io.LimitReader(body, maxErrBody))
+	raw, err := io.ReadAll(io.LimitReader(body, maxResponseBytes))
 	if err != nil {
-		return c.snapshotFallback("read", err), nil
+		return snapshotFallback("read", err), nil
 	}
 	infos, skipped := parseCatalog(raw)
 	if len(infos) == 0 {
-		return c.snapshotFallback(fmt.Sprintf("empty_catalog(skipped=%d)", skipped), nil), nil
+		return snapshotFallback(fmt.Sprintf("empty_catalog(skipped=%d)", skipped), nil), nil
 	}
 	log.Printf("deepai models: fetched n=%d skipped_responses_only=%d", len(infos), skipped)
 	return infos, nil
@@ -245,8 +245,11 @@ func hasModality(input []string, want string) bool {
 
 // snapshotFallback 记录「为什么走了快照」并返回编译快照（27 条）。
 //
+// 不挂在 Client 上：它不需要任何客户端状态（纯日志 + 快照），挂上去只会让人以为
+// 「换个 Client 就会换一份快照」。
+//
 // reason 是稳定前缀，便于日志检索；err 可为 nil（如空目录那条）。
-func (c *Client) snapshotFallback(reason string, err error) []provider.ModelInfo {
+func snapshotFallback(reason string, err error) []provider.ModelInfo {
 	if err != nil {
 		log.Printf("deepai models: fallback to snapshot reason=%s err=%v", reason, err)
 	} else {
