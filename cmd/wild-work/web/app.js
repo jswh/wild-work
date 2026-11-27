@@ -678,7 +678,11 @@ function renderCreditDetail() {
     }
     // Token 条目用紧凑单位显示（上亿数字直接铺开会撑破表格）。
     const cellNum = (v) => (it.unit === "token" ? fmtTokens(v) : v);
-    html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${cellNum(it.total)}</td><td>${cellNum(it.used)}</td><td>${cellNum(it.remain)}</td>`;
+    // 负数余额（DeepAI 的 Theos 可为负 = 已超额）：红字如实展示，不夹 0。
+    const numCell = (v) => (Number(v) < 0 ? `<span class="credit-neg">${cellNum(v)}</span>` : cellNum(v));
+    // 原始数值串（后端 ResourceItem.raw）：四舍五入后与官网小数对不上时，靠 tooltip 对上。
+    const rawTitle = it.raw ? ` title="上游原始值：${esc(it.raw)}"` : "";
+    html += `<tr${cls}><td${rawTitle}>${esc(it.name)}${tag}</td><td>${numCell(it.total)}</td><td>${numCell(it.used)}</td><td>${numCell(it.remain)}</td>`;
     if (hasExpiry) html += `<td${expCellCls}>${expCell}</td>`;
     html += `</tr>`;
   }
@@ -853,7 +857,7 @@ function varyColor(hex, i) {
 // Loomy 同样已实现签到（宠物每日打工奖励，见 internal/loomy/checkin.go），故也在名单外。
 // 注意：Loomy 的奖励判据是「当日有效对话轮次」（上游算），未在官方客户端用过该账号时
 // 领取结果会是「未达档位」——那是如实状态，不是按钮坏了。
-const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline", "comate", "chatgpt"]);
+const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline", "comate", "chatgpt", "deepai"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
 // isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
 // 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
@@ -891,6 +895,9 @@ const NO_CHECKIN_TAG = {
   cline: "无签到",
   comate: "无签到",
   chatgpt: "无签到",
+  // DeepAI 的「签到」是 /theos 探测的副作用（回传上一轮 nonce），没有独立动作，
+  // 也没有可读的签到状态 ⇒ 灰标而非红/绿。
+  deepai: "随探针自动签到",
 };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
@@ -963,6 +970,9 @@ function creditParts(a) {
     isToken,
     term: creditTermOf(a),
     num: isToken ? fmtTokens(a.credits) : a.credits,
+    // neg 负数余额（DeepAI 的 Theos 可为负 = 已超额）：如实展示，不夹 0、不改写，
+    // 只在渲染层加红字与说明（免费模型不受影响，这一点必须写在 tooltip 里）。
+    neg: !isToken && (Number(a.credits) || 0) < 0,
     expiring: (a.expiring_credits || 0) > 0
       ? (isToken ? fmtTokens(a.expiring_credits) : a.expiring_credits) : 0,
     unusable: (!isToken && (a.unusable_credits || 0) > 0) ? a.unusable_credits : 0,
@@ -984,7 +994,9 @@ function creditsText(a) {
     if (p.expiring) html += `<span class="credit-expiring"> (临期${p.expiring})</span>`;
     return html;
   }
-  let html = `<span class="credit-num">${p.num}</span><span>可用${creditTermWord(p.term)}</span>`;
+  const numCls = p.neg ? "credit-num credit-neg" : "credit-num";
+  const numTitle = p.neg ? ` title="余额为负：计量模型已超额不可用（免费模型不受影响）"` : "";
+  let html = `<span class="${numCls}"${numTitle}>${p.num}</span><span>可用${creditTermWord(p.term)}</span>`;
   if (p.expiring) html += `<span class="credit-expiring"> (临期${p.expiring})</span>`;
   if (p.unusable) html += `<span class="credit-unusable"> (不可用${p.unusable})</span>`;
   return html;
@@ -1005,7 +1017,9 @@ function creditsTextRow(a) {
   const unit = p.isToken
     ? `<span class="cr-unit" title="本渠道额度以 token 计量，与积分分开统计">tokens</span>`
     : `<span class="cr-unit">可用${creditTermWord(p.term)}</span>`;
-  const main = `<div class="cr-main has-unit"><span class="cr-num-box"><span class="credit-num">${p.num}</span></span>${unit}</div>`;
+  const numCls = p.neg ? "credit-num credit-neg" : "credit-num";
+  const numTitle = p.neg ? ` title="余额为负：计量模型已超额不可用（免费模型不受影响）"` : "";
+  const main = `<div class="cr-main has-unit"><span class="cr-num-box"><span class="${numCls}"${numTitle}>${p.num}</span></span>${unit}</div>`;
   let badges = "";
   if (p.expiring) badges += `<span class="credit-expiring"> (临期${p.expiring})</span>`;
   if (p.unusable) badges += `<span class="credit-unusable"> (不可用${p.unusable})</span>`;

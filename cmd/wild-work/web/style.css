@@ -1907,3 +1907,7 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 .time-editor { display: inline-flex; align-items: center; gap: 6px; }
 .time-editor[hidden] { display: none; }
 .time-pick { width: 116px; padding: 5px 8px; font-size: 13px; }
+
+/* 负数余额（DeepAI 的 Theos 可为负 = 已超额）：如实展示、只上红字，不改写数字。
+   免费模型不受影响，具体说明在 title 里（不占版面）。 */
+.credit-neg { color: var(--danger); font-variant-numeric: tabular-nums; }

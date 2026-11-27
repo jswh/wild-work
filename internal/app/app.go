@@ -529,6 +529,11 @@ func (a *App) creditsTerm(group string) string {
 	if group == provider.ModelScope.String() || group == provider.ModelScopeAI.String() {
 		return "魔粒"
 	}
+	// DeepAI Code 站内把额度叫「Theos」（付费模型按次扣）。计量口径仍是积分
+	// （credits_unit 保持空串 ⇒ 仍进积分合计与折线图），只换显示术语。
+	if group == provider.DeepAI.String() {
+		return "Theos"
+	}
 	return ""
 }
 

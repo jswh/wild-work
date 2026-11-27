@@ -1079,6 +1079,9 @@ func main() {
 		// internal/modelscope/credits.go）：不纳入就只在首次验证 token 时刷一次，
 		// 对话消耗后面板数字永远停在旧值。两区各自独立、互不兜底。
 		provider.ModelScope, provider.ModelScopeAI,
+		// DeepAI 的余额（Theos）在 /deepai_code/theos：不纳入就永远显示 0；而且这条
+		// 探测本身**就是签到**（回传上一轮 nonce），刷新周期停了签到也就停了。
+		provider.DeepAI,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
