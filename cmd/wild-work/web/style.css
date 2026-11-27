@@ -40,6 +40,10 @@
   --ch-zcode: #581c87;       /* ZCode 极客深紫檀 */
   --ch-gemini: #88117c;      /* Gemini 官方星云品紫 */
   --ch-codearts: #991b1b;    /* CodeArts 华为云深绯红 */
+  /* DeepAI Code：深松石绿（桌面端是青绿系基调，但直接取官方亮青会与 wbai/trae 撞色；
+     取同色相压暗一档 #134e4a —— 白字对比 9.48，与最近邻 chatgpt ΔE2000=11.0（<14，
+     属已知弱邻对，与 lingxi/qodercom 6.1 同级取舍））。 */
+  --ch-deepai: #134e4a;
   /* ModelScope 两区（D18）：国内站 柔蓝、国际站 暗岿金。
      ⚠️ 国际站原案 #b45309 与既有 loomy 完全同色（ΔE 0），R99 「无完全同色」硬约束通不过，
      改取同色相更暗的 #854d0e（白字对比 6.85，与最近邻 loomy ΔE 11.1）。 */
@@ -161,6 +165,7 @@ body {
 .btn.primary.alt.zcode { background: var(--ch-zcode); border-color: var(--ch-zcode); }
 .btn.primary.alt.gemini { background: var(--ch-gemini); border-color: var(--ch-gemini); }
 .btn.primary.alt.codearts { background: var(--ch-codearts); border-color: var(--ch-codearts); }
+.btn.primary.alt.deepai { background: var(--ch-deepai); border-color: var(--ch-deepai); }
 .btn.primary.alt.cline { background: var(--ch-cline); border-color: var(--ch-cline); }
 .btn.primary.alt.comate { background: var(--ch-comate); border-color: var(--ch-comate); }
 .btn.primary.alt.modelscope { background: var(--ch-modelscope); border-color: var(--ch-modelscope); }
@@ -393,6 +398,7 @@ body {
 .badge.zcode { background: var(--ch-zcode); }
 .badge.gemini { background: var(--ch-gemini); }
 .badge.codearts { background: var(--ch-codearts); }
+.badge.deepai { background: var(--ch-deepai); }
 .badge.cline { background: var(--ch-cline); }
 .badge.comate { background: var(--ch-comate); }
 .badge.modelscope { background: var(--ch-modelscope); }

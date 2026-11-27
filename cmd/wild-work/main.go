@@ -37,6 +37,7 @@ import (
 	"wild-work/internal/comate"
 	"wild-work/internal/config"
 	"wild-work/internal/custom"
+	"wild-work/internal/deepai"
 	"wild-work/internal/devdump"
 	"wild-work/internal/doubao"
 	"wild-work/internal/gateway"
@@ -275,8 +276,14 @@ func main() {
 	if err != nil {
 		fatal("读取 CodeArts 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, comate=%d, lingxi=%d, modelscope=%d, modelscopeai=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d, codearts=%d, doubao=%d, chatgpt=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(cmAuths), len(lxAuths), len(msAuths), len(msaiAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths), len(dbAuths), len(cgAuths), cfg.AuthDir)
+	// DeepAI Code：粘贴/登录型渠道，凭据是一枚不轮换的 API Key（无 refresh 端点）⇒
+	// 无保活、无独立签到（签到是 /theos 探测的副作用）。真多账号池，不置 SingleAccount。
+	daiAuths, err := auth.LoadDeepAIDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 DeepAI 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, comate=%d, lingxi=%d, modelscope=%d, modelscopeai=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d, codearts=%d, deepai=%d, doubao=%d, chatgpt=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(cmAuths), len(lxAuths), len(msAuths), len(msaiAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths), len(daiAuths), len(dbAuths), len(cgAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -412,6 +419,14 @@ func main() {
 	for _, a := range caAuths {
 		caPool.Add(a)
 	}
+	// DeepAI Code：真多账号池（一枚 API Key = 一个账号），不置 SingleAccount。
+	// 每个账号缺机器指纹时在此生成并落盘（上游按机器指纹发放每日免费额度，
+	// 共用会让多号互相抵消——见 internal/deepai 包注释）。
+	daiPool := pool.New(filepath.Join(stateDir, "state-deepai.json"))
+	for _, a := range daiAuths {
+		deepai.EnsureMachine(a)
+		daiPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -516,6 +531,9 @@ func main() {
 	caUp.UnusableFile = filepath.Join(stateDir, "models-codearts.json")
 	caUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	caUp.StreamHTTP.Transport = caUp.HTTP.Transport
+	// DeepAI Code：OpenAI chat 兼容 + 自有车道/机器指纹头；长思考常见 ⇒ 非流式 client 留
+	// 总超时兜底，StreamHTTP 不设 Timeout（R35），两者共用 Transport（New 内部已共用）。
+	daiUp := deepai.NewWithTimeout(time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second)
 	glmUp := glm.New()
 	// ⚠️ 只改 HTTP（非流式）的 Timeout。
 	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
@@ -568,6 +586,7 @@ func main() {
 		provider.ZCode.String():        {zcdUp.HTTP, zcdUp.StreamHTTP},
 		provider.Gemini.String():       {gemUp.HTTP, gemUp.StreamHTTP},
 		provider.CodeArts.String():     {caUp.HTTP, caUp.StreamHTTP},
+		provider.DeepAI.String():       {daiUp.HTTP, daiUp.StreamHTTP},
 		provider.GLM.String():          {glmUp.HTTP, glmUp.StreamHTTP},
 		provider.ChatGPT.String():      {cgUp.HTTP, cgUp.StreamHTTP}})
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -716,6 +735,12 @@ func main() {
 	// 签到结果按结构化状态上报），也需要 token 保活（续期后必须落盘，不变量 20）。
 	caSch := scheduler.New(scheduler.Config{Pool: caPool, Upstream: caUp, Name: "codearts", FollowGlobalCheckin: true,
 		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, Ledger: lg})
+	// DeepAI Code：**没有独立签到任务**——签到是 `/theos` 探测的副作用（上一次 nonce 回传），
+	// 由积分刷新路径驱动（票 04）。故两个时刻表都传**显式空切片 []int{}**（R39）：传 nil 会被
+	// 零值兜底补上默认时间，于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。
+	// 也**不进** FollowGlobalCheckin（用户改签到时刻不该给这条渠道长出签到任务）。
+	daiSch := scheduler.New(scheduler.Config{Pool: daiPool, Upstream: daiUp, Name: "deepai",
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}, Ledger: lg})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
@@ -776,6 +801,9 @@ func main() {
 		// CodeArts：真多账号渠道 ⇒ 不置 SingleAccount。
 		provider.CodeArts: {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, StaticModels: codearts.StaticModels(),
 			ModelFilter: caUp.FilterUnusable},
+		// DeepAI Code：真多账号渠道 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
+		// 静态兜底 = 编译期快照 27 条（上游 28 个里剔除只认 /responses 的 gpt-6-astra）。
+		provider.DeepAI: {Kind: provider.DeepAI, Pool: daiPool, Upstream: daiUp, StaticModels: deepai.StaticModels()},
 		// ModelScope 两区：真多 token 池 ⇒ 不置 SingleAccount（错误分类 + 池内轮换都适用）。
 		// StaticModels 只是最小静态集（票 02 补「静态表 ∪ 上游 /v1/models」）。
 		provider.ModelScope:   {Kind: provider.ModelScope, Pool: msPool, Upstream: msUp, StaticModels: modelscope.StaticModels()},
@@ -807,6 +835,7 @@ func main() {
 		provider.ZCode:        {Kind: provider.ZCode, Pool: zcdPool, Upstream: zcdUp, Scheduler: zcdSch},
 		provider.Gemini:       {Kind: provider.Gemini, Pool: gemPool, Upstream: gemUp, Scheduler: gemSch},
 		provider.CodeArts:     {Kind: provider.CodeArts, Pool: caPool, Upstream: caUp, Scheduler: caSch},
+		provider.DeepAI:       {Kind: provider.DeepAI, Pool: daiPool, Upstream: daiUp, Scheduler: daiSch},
 		provider.ModelScope:   {Kind: provider.ModelScope, Pool: msPool, Upstream: msUp, Scheduler: msSch},
 		provider.ModelScopeAI: {Kind: provider.ModelScopeAI, Pool: msaiPool, Upstream: msaiUp, Scheduler: msaiSch},
 	}
@@ -990,6 +1019,9 @@ func main() {
 	// ctx/配置变更；但漏了它，将来给它加任务就会静默不跑。
 	go cgSch.Run(sctx)
 	// Lingxi 的 Run 不可漏（R34）：本渠道有每日签到任务。
+	// DeepAI 的 Run 同样不可漏（R34）：本渠道当前无定时任务（签到是 /theos 的副作用），
+	// Run 只会阻塞等 ctx/配置变更；但漏了它，将来给它加任务就会静默不跑。
+	go daiSch.Run(sctx)
 	go lxSch.Run(sctx)
 	// OfficeAce 的 Run 不可漏（R34）：本渠道有签到与保活。
 	go oaSch.Run(sctx)

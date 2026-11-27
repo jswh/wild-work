@@ -68,6 +68,7 @@
           <button class="btn primary alt chatgpt" id="btnAddChatGPT" title="ChatGPT 网页逆向通道：凭据需从浏览器登录后粘贴（chatgpt.com 境内不可达，须先配代理）">＋ ChatGPT Web</button>
           <button class="btn primary alt cline" id="btnAddCline" title="免费池渠道：粘贴官方 API Key，须为多个独立账号各自的 Key">＋ Cline</button>
           <button class="btn primary alt codearts" id="btnAddCodeArts" title="CodeArts（华为云）：PKCE 授权登录，支持多账号；免费额度按 UTC+8 自然日重置">＋ CodeArts</button>
+          <button class="btn primary alt deepai" id="btnAddDeepAI" title="DeepAI Code：桌面端网页逆向通道；粘贴桌面端 API Key，或（后续）浏览器登录 / 粘贴回调地址 / 导入桌面凭据。每日免费额度按机器指纹发放，请一账号一 Key">＋ DeepAI Code</button>
           <button class="btn primary alt gemini" id="btnAddGemini" title="Gemini（Google Code Assist）：本机回调授权登录，支持多账号">＋ Gemini</button>
           <button class="btn primary alt lobsterai" id="btnAddLobsterAI" title="LobsterAI（有道龙虾）：本机回调授权登录，支持多账号">＋ LobsterAI</button>
           <button class="btn primary alt loomy" id="btnAddLoomy">＋ Loomy</button>
@@ -610,6 +611,49 @@
     <div class="modal-actions">
       <button class="btn small" id="btnConfirmCancel">取消</button>
       <button class="btn small danger" id="btnConfirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- DeepAI Code（桌面端网页逆向通道）：本票只落地「粘贴 API Key」一条入口。
+     浏览器 PKCE 登录 / 粘贴回调地址 / 桌面凭据导入 / 单账号代理 是后续票的交付物，
+     届时**在同一个弹层里**加分段（不要另开弹层：一个渠道一个入口是既定的面板纪律）。 -->
+<div class="overlay hidden" id="deepaiOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title" id="deepaiTitle">添加 DeepAI Code 账号</div>
+    <div class="modal-body settings-body">
+
+      <div class="cfg-section">
+        <div class="cfg-heading">方式一：粘贴桌面端 API Key</div>
+        <div class="hint" style="margin-bottom:8px">
+          在 DeepAI Code 桌面端登录后，从它的凭据里取 <code>Api-Key</code> 的值粘到下面。
+          本工具会用一次<b>零费用</b>的目录请求校验（不打对话、不动签到），通过才落盘到
+          <code>auths/deepai-&lt;uid&gt;.json</code>（仅属主可读），<b>不会</b>回显在页面上。
+        </div>
+        <input id="deepaiKeyInput" class="input grow" spellcheck="false" autocomplete="off"
+               placeholder="粘贴 API Key（可直接粘整行 Api-Key: …）"
+               style="width:100%;font-family:ui-monospace,monospace">
+        <div class="hint" style="margin-top:6px">
+          <button class="btn small primary" id="btnDeepAIKeySubmit">验证并添加</button>
+        </div>
+      </div>
+
+      <div class="glm-warn">
+        <div class="glm-warn-title">⚠️ 一个账号一份 Key，且不要共用机器指纹</div>
+        <ol>
+          <li>上游的每日免费额度按<b>账号 + 机器指纹</b>发放。同一个号反复添加不会增加额度，
+            换个号才有意义。</li>
+          <li>本工具给每个账号各生成一枚机器指纹（保存在凭据文件里），<b>不要</b>把同一份凭据文件
+            复制给多个账号 —— 那会让它们互相抵消额度。</li>
+          <li>只有 <code>chat/completions</code> 面的 27 个模型可用；只认 <code>/responses</code>
+            的模型（付费最高那档）本工具不提供。</li>
+        </ol>
+      </div>
+
+      <div class="hint" id="deepaiErr" style="color:var(--danger)"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btnDeepAICancel">关闭</button>
     </div>
   </div>
 </div>

@@ -26,6 +26,7 @@ import (
 	"wild-work/internal/comate"
 	"wild-work/internal/config"
 	"wild-work/internal/custom"
+	"wild-work/internal/deepai"
 	"wild-work/internal/doubao"
 	"wild-work/internal/ledger"
 	"wild-work/internal/lingxi"
@@ -1800,6 +1801,79 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 	return res.UID, warn, nil
 }
 
+// SubmitDeepAIKey 提交用户粘贴的 API Key：零费用校验 → 落盘 → 重载账号池。
+//
+// 校验只调 `GET /deepai_code/models`（带 Key 即 200、不改变上游任何状态）——
+// 对话要花 Theos、`/theos` 会推进签到环，都不能当校验用。
+//
+// uid 由 Key 派生（`dai-` + sha256 前 16 位）：/models 与 /theos 都不回传身份字段，
+// Key 本身是唯一稳定标识（同账号重登换 Key 这种情况未实证，见 spec §15）。
+// 机器指纹在落盘前生成：上游按它发放每日免费额度，缺了会让该号退化成「只能烧付费额度」。
+//
+// 同账号检测：同一枚 Key 重复添加不增加额度（免费额度按机器/账号发），提示用户换号；
+// 但**不覆盖**用户手工改过的昵称（R137 同款纪律：重贴凭据不得冲掉展示名）。
+func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
+	key := deepai.NormalizeKey(apiKey)
+	if key == "" {
+		return "", "", errors.New("API Key 不能为空")
+	}
+	// 优先复用已装配的渠道 client（含 upstream.timeout_seconds 的接线与将来的出口配置）；
+	// 未装配时退回默认 client，保证「面板可加号」不依赖 runtimes 注册顺序。
+	client := deepai.New()
+	if rt := a.runtime(provider.DeepAI); rt != nil {
+		if c, ok := rt.Upstream.(*deepai.Client); ok && c != nil {
+			client = c
+		}
+	}
+	uid, err := client.ValidateKey(context.Background(), key)
+	if err != nil {
+		return "", "", err
+	}
+
+	warn := ""
+	prevNick := ""
+	if existing, lerr := auth.LoadDeepAIDir(a.cfg.AuthDir); lerr == nil {
+		for _, e := range existing {
+			if e.AccessTokenValue() == key {
+				warn = fmt.Sprintf("这枚 API Key 与已添加的账号 %s 相同（免费额度按账号/机器发放），"+
+					"重复添加不会增加可用额度。请改用另一个 DeepAI 账号。", e.UID)
+				break
+			}
+		}
+		for _, e := range existing {
+			if e.UID == uid {
+				prevNick = e.Nickname
+				break
+			}
+		}
+	}
+
+	_ = os.MkdirAll(a.cfg.AuthDir, 0o755)
+	nick := strings.TrimSpace(prevNick)
+	if nick == "" {
+		// 没有身份端点可查：用 uid 尾号做可读名（用户可在面板改名）。
+		nick = "DeepAI " + uid[len(uid)-4:]
+	}
+	ca := &auth.Auth{
+		Kind:        provider.DeepAI.String(),
+		UID:         uid,
+		Nickname:    nick,
+		AccessToken: key,
+		// Key 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
+		ExpiresAt: deepai.FarFutureExpiry(),
+		MachineID: deepai.NewUUID(),
+		FilePath:  filepath.Join(a.cfg.AuthDir, "deepai-"+uid+".json"),
+	}
+	if err := ca.SaveAtomic(); err != nil {
+		return "", "", fmt.Errorf("保存 DeepAI 凭据失败：%w", err)
+	}
+	// 日志零 token（不变量 2）：只打 uid，绝不打 Key。
+	log.Printf("deepai 账号已添加（粘贴 API Key）uid=%s 同账号告警=%v", uid, warn != "")
+	a.reloadAccounts()
+	a.afterAccountAdded(provider.DeepAI)
+	return uid, warn, nil
+}
+
 // SubmitComateSID 提交用户粘贴的 wps_sid Cookie：验证 → 落盘 → 重载账号池。
 //
 // 验证只调 GET /models —— **零积分消耗**，避免「添加账号即烧积分」。
@@ -2833,6 +2907,16 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadClineDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload cline accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	// DeepAI Code：一枚 API Key = 一个账号，四条添加路径（浏览器 PKCE / 粘贴回调 /
+	// 粘贴 Key / 桌面凭据导入）都落成 deepai-*.json，都靠本分支同步进池。
+	if rt := a.runtime(provider.DeepAI); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadDeepAIDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload deepai accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -4772,6 +4856,21 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
 	})
 
+	mux.HandleFunc("POST /api/login/deepai_key", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			APIKey string `json:"api_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求体解析失败")
+			return
+		}
+		uid, warn, err := a.SubmitDeepAIKey(req.APIKey)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
 	mux.HandleFunc("POST /api/login/comate_sid", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			SID string `json:"sid"`

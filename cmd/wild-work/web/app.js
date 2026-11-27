@@ -753,8 +753,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", cline: "Cline", officeace: "OfficeAce", comate: "WPS Comate", lingxi: "WPS 灵犀", modelscope: "ModelScope", modelscopeai: "ModelScopeAI", doubao: "豆包", chatgpt: "ChatGPT Web" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace", comate: "comate", lingxi: "lingxi", modelscope: "modelscope", modelscopeai: "modelscopeai", doubao: "doubao", chatgpt: "chatgpt" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", deepai: "DeepAI Code", cline: "Cline", officeace: "OfficeAce", comate: "WPS Comate", lingxi: "WPS 灵犀", modelscope: "ModelScope", modelscopeai: "ModelScopeAI", doubao: "豆包", chatgpt: "ChatGPT Web" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", deepai: "deepai", cline: "cline", officeace: "officeace", comate: "comate", lingxi: "lingxi", modelscope: "modelscope", modelscopeai: "modelscopeai", doubao: "doubao", chatgpt: "chatgpt" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
@@ -2133,6 +2133,14 @@ function promptLogin(channel) {
     return;
   }
 
+  // DeepAI Code：本票只有「粘贴 API Key」一条入口（浏览器登录/粘贴回调/桌面凭据导入是
+  // 后续票的交付物，届时在同一个弹层里加分段）。没有 CDP/扫码路径：凭证是桌面端签发的
+  // API Key，不是网页会话 Cookie。
+  if (channel === "deepai") {
+    openDeepAIDialog();
+    return;
+  }
+
   // OfficeAce（华为云果办）：主按钮走自助 OAuth（打开华为云授权页），
   // 次按钮回退到「从本机 OfficeAce 客户端导入」。
   if (channel === "officeace") {
@@ -2993,6 +3001,44 @@ async function submitChatGPTAuth() {
   }
 }
 
+// ---------- DeepAI Code：粘贴桌面端 API Key ----------
+// 凭据是一枚不轮换的 API Key（无 refresh 端点）：失效只能重新登录桌面端再粘一枚。
+// 校验是**零费用**的目录请求（对话花 Theos、/theos 推进签到环，都不能当校验用）。
+function openDeepAIDialog() {
+  $("deepaiTitle").textContent = "添加 " + chLabel("deepai") + " 账号";
+  $("deepaiKeyInput").value = "";
+  $("deepaiErr").textContent = "";
+  $("deepaiOverlay").classList.remove("hidden");
+  setTimeout(() => $("deepaiKeyInput").focus(), 30);
+}
+// closeDeepAIDialog 关闭即清空输入：它是凭据，不得留在 DOM 里。
+function closeDeepAIDialog() {
+  $("deepaiKeyInput").value = "";
+  $("deepaiErr").textContent = "";
+  $("deepaiOverlay").classList.add("hidden");
+}
+async function submitDeepAIKey() {
+  const key = ($("deepaiKeyInput").value || "").trim();
+  if (!key) { $("deepaiErr").textContent = "请粘贴桌面端 API Key"; return; }
+  const btn = $("btnDeepAIKeySubmit");
+  btn.disabled = true;
+  $("deepaiErr").textContent = "验证中…";
+  try {
+    const r = await api("/api/login/deepai_key", { api_key: key });
+    $("deepaiKeyInput").value = "";
+    closeDeepAIDialog();
+    if (r && r.warning) toast(r.warning, 8000);
+    toast(chLabel("deepai") + " 账号已添加");
+    await loadState();
+    refreshFees();
+  } catch (e) {
+    // 失败：错误留在弹层里（不关、不清），用户只需换一枚 Key。
+    $("deepaiErr").textContent = e.message || "验证失败";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // importChatGPTFromDir 从 ww3 客户端数据目录批量导入存量凭据（票 08）。
 // 后端逐个文件解析（复用同一份解析器）→ 一次零费用 /backend-api/me 校验 → 不覆盖已存在账号，
 // 并把**每个文件**的结果回传（file / 短 uid / status / reason），前端逐条展示。
@@ -3307,7 +3353,7 @@ async function saveModelFallback() {
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
   "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai",
-  "zcode", "gemini", "codearts", "glm", "cline", "officeace", "comate", "lingxi",
+  "zcode", "gemini", "codearts", "deepai", "glm", "cline", "officeace", "comate", "lingxi",
   "modelscope", "modelscopeai",
   "doubao", // 豆包（扫码/Cookie 渠道）
   "chatgpt", // ChatGPT 网页逆向通道
@@ -4337,6 +4383,9 @@ function bind() {
   $("btnAddModelScope").onclick = () => promptLogin("modelscope");
   $("btnAddModelScopeAI").onclick = () => promptLogin("modelscopeai");
   $("btnAddChatGPT").onclick = () => promptLogin("chatgpt");
+  $("btnAddDeepAI").onclick = () => promptLogin("deepai");
+  $("btnDeepAIKeySubmit").onclick = submitDeepAIKey;
+  $("btnDeepAICancel").onclick = closeDeepAIDialog;
   $("btnMsSubmit").onclick = submitMsToken;
   $("btnCgptSubmit").onclick = submitChatGPTAuth;
   $("btnCgptImport").onclick = importChatGPTFromDir;
