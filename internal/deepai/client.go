@@ -3,7 +3,6 @@ package deepai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"time"
@@ -57,9 +56,6 @@ func (c *Client) IdleTimeout() time.Duration {
 	return defaultIdleTimeout
 }
 
-// SetIdleTimeout 覆盖流中空闲上限（测试与将来的渠道级调优用）。
-func (c *Client) SetIdleTimeout(d time.Duration) { c.idle = d }
-
 // newTransport 建标准连接池（与其它渠道同口径，不启用 HTTP/2 强制）。
 func newTransport() *http.Transport {
 	return &http.Transport{
@@ -109,26 +105,3 @@ func (c *Client) do(req *http.Request, client *http.Client) (io.ReadCloser, int,
 // 需要它是因为 `provider.Upstream` 要求；返回 nil 让「到期前刷新」这条路径安静通过。
 // 凭据失效（401 / 3xx）走 `ErrSessionDead`，用户重新粘贴 Key 或重新登录即可自愈（R76）。
 func (c *Client) RefreshToken(*auth.Auth) error { return nil }
-
-// UsageSummary 读取上游 `/get_usage_summary`（配额票里的「用量概览」）。
-//
-// 本票不接线（只在调试/未来维度上用），保留一个薄封装以免将来重新推导地址。
-func (c *Client) UsageSummary(ctx context.Context, a *auth.Auth) (map[string]any, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/get_usage_summary", a, nil, "")
-	if err != nil {
-		return nil, err
-	}
-	body, status, errBody, err := c.do(req, c.HTTP)
-	if err != nil {
-		return nil, err
-	}
-	if body == nil {
-		return nil, upstreamErrorWithStatus(status, errBody)
-	}
-	defer body.Close()
-	var out map[string]any
-	if err := json.NewDecoder(body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}

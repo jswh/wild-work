@@ -49,10 +49,10 @@ func applyHeaders(req *http.Request, a *auth.Auth, affinity string) {
 	}
 }
 
-// chatPeek 从（已预处理过的）请求体里取渠道需要的最小信息。
+// chatPeek 从（已预处理过的）请求体里取渠道需要的最小信息：
+// 只关心 `stream`（决定用流式还是非流式 client）。`model` 由调用方显式传入，不从这里取。
 type chatPeek struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Stream bool `json:"stream"`
 }
 
 func peekChat(body []byte) chatPeek {
