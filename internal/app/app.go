@@ -1957,7 +1957,7 @@ func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string,
 func deepaiSource(username string, isPro bool) string {
 	switch {
 	case username != "" && isPro:
-		return "login/pro(pro)"
+		return "login(pro)"
 	case username != "":
 		return "login"
 	default:
