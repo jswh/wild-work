@@ -48,7 +48,7 @@ func TestDeepAIThreeEntriesSameUID(t *testing.T) {
 	a, _, dir := newDeepAIApp(t, srv.URL)
 
 	// 入口 1：粘贴 Key（username 未知 ⇒ 按 Key 派生）。
-	uid1, _, err := a.SubmitDeepAIKey("key-same")
+	uid1, _, err := a.SubmitDeepAIKey("key-same", "")
 	if err != nil {
 		t.Fatalf("粘贴 Key: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestDeepAIThreeEntriesSameUID(t *testing.T) {
 		[]byte(`{"apiKey":"key-same","username":"alice","isPro":false}`), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	uid3, _, err := a.ImportDeepAIDesktop(filepath.Join(dir, "desktop"))
+	uid3, _, err := a.ImportDeepAIDesktop(filepath.Join(dir, "desktop"), "")
 	if err != nil {
 		t.Fatalf("桌面导入: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestDeepAILoginWiring(t *testing.T) {
 func TestDeepAIDesktopImportMissingIsReadable(t *testing.T) {
 	srv := anyKeyUpstream(t)
 	a, _, _ := newDeepAIApp(t, srv.URL)
-	_, _, err := a.ImportDeepAIDesktop(t.TempDir())
+	_, _, err := a.ImportDeepAIDesktop(t.TempDir(), "")
 	if err == nil || !strings.Contains(err.Error(), "未找到") {
 		t.Fatalf("应为「未找到桌面凭据」的可读错误，实际 %v", err)
 	}

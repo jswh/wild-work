@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,6 +131,9 @@ type App struct {
 	// 上游不提供稳定身份字段的渠道（当前是 CodeArts）靠它区分「同一账号重新登录」与
 	// 「新增第二个账号」——否则方案 B 的复用逻辑会把第二个账号覆盖到第一条上（用户实测报告）。
 	loginLabel string
+	// loginProxy 用户在登录弹窗里填的「出口 / 代理」（可选，仅 deepai 使用）。
+	// 登录那一刻账号还不存在，出口只能先存这里、等凭据换回来再随账号落盘（票 06）。
+	loginProxy string
 	// loginBackendOpened 本次登录的授权页是否已由本工具（无痕窗口）拉起。
 	// 前端据此**不再** window.open —— 否则会在日常浏览器里再开一个带登录态的标签页，
 	// 无痕的努力就白费了（授权页照样会复用已登录的华为云账号）。
@@ -1831,8 +1835,8 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 //
 // 同账号检测：同一枚 Key 重复添加不增加额度（免费额度按机器/账号发），提示用户换号；
 // 但**不覆盖**用户手工改过的昵称（R137 同款纪律：重贴凭据不得冲掉展示名）。
-func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
-	return a.persistDeepAIAccount(apiKey, "", false)
+func (a *App) SubmitDeepAIKey(apiKey, proxy string) (string, string, error) {
+	return a.persistDeepAIAccount(apiKey, "", proxy, false)
 }
 
 // persistDeepAIAccount 三个入口（粘贴 Key / 浏览器登录 / 桌面导入）**唯一**的落盘通道。
@@ -1847,10 +1851,20 @@ func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
 //
 // 保留项：已有文件的昵称（用户可能改过，R137 同款纪律）、机器指纹（换指纹等于换免费额度
 // 身份，不能因为重贴凭据就重置）。Extra 里的 username/is_pro 随本次结果更新。
-func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string, string, error) {
+func (a *App) persistDeepAIAccount(apiKey, username, proxy string, isPro bool) (string, string, error) {
 	key := deepai.NormalizeKey(apiKey)
 	if key == "" {
 		return "", "", errors.New("API Key 不能为空")
+	}
+	// 代理串在**落盘前**规整 + 校验：写坏了的出口一旦入库，该账号每次请求都会失败，
+	// 而用户只会看到「对话 502」。这里当场报错并说明形态。
+	proxyURL, perr := deepai.NormalizeProxy(proxy)
+	if perr != nil {
+		return "", "", fmt.Errorf("代理配置有误：%w", perr)
+	}
+	proxyStr := ""
+	if proxyURL != nil {
+		proxyStr = proxyURL.String()
 	}
 	username = strings.TrimSpace(username)
 	// 优先复用已装配的渠道 client（含 upstream.timeout_seconds 的接线与将来的出口配置）；
@@ -1918,11 +1932,22 @@ func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string,
 	if isPro {
 		extra[deepai.ExtraIsPro] = "true"
 	}
+	prevProxy := ""
+	for _, e := range existing {
+		if e.UID == uid {
+			prevProxy = e.Proxy
+		}
+	}
+	if proxyStr == "" {
+		// 本次没填代理 ⇒ 沿用该账号已配的出口（重贴凭据/桌面导入不该把代理冲掉）。
+		proxyStr = prevProxy
+	}
 	ca := &auth.Auth{
 		Kind:        provider.DeepAI.String(),
 		UID:         uid,
 		Nickname:    nick,
 		AccessToken: key,
+		Proxy:       proxyStr,
 		// Key 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
 		ExpiresAt: deepai.FarFutureExpiry(),
 		MachineID: machine,
@@ -1969,20 +1994,82 @@ func deepaiSource(username string, isPro bool) string {
 //
 // 与另外两条入口共用 persistDeepAIAccount：校验、uid 归一、机器指纹、昵称保留全部一致，
 // 因此「桌面导入」与「粘贴同一个 Key」产出的是**同一个文件**（不会重复建号）。
-func (a *App) ImportDeepAIDesktop(explicitDir string) (string, string, error) {
+func (a *App) ImportDeepAIDesktop(explicitDir, proxy string) (string, string, error) {
 	cred, err := logindeepai.FindDesktopCredentials(explicitDir)
 	if err != nil {
 		return "", "", err
 	}
-	return a.persistDeepAIAccount(cred.APIKey, cred.Username, cred.IsPro)
+	return a.persistDeepAIAccount(cred.APIKey, cred.Username, proxy, cred.IsPro)
 }
 
 // completeDeepAILogin 浏览器 PKCE 登录成功后的落盘（与另外两条入口同一条通道）。
 func (a *App) completeDeepAILogin(r logindeepai.Result) error {
-	if _, _, err := a.persistDeepAIAccount(r.APIKey, r.Username, r.IsPro); err != nil {
+	// 登录时填的出口在 /api/login/start 里存进 a.loginProxy（与 loginLabel 同款待用值）。
+	a.muLogin.Lock()
+	proxy := a.loginProxy
+	a.muLogin.Unlock()
+	if _, _, err := a.persistDeepAIAccount(r.APIKey, r.Username, proxy, r.IsPro); err != nil {
 		return err
 	}
 	return nil
+}
+
+// proxyCapableKind 报告该渠道是否支持「账号级出口」（目前只有 deepai）。
+//
+// 为什么要白名单：把代理写到别的渠道的凭据里只是**静默无效**（它们的 Transport 不读
+// 该字段），面板却会显示「已设置」——那种「看起来配了、实际没用」比没有这个功能更坏。
+func proxyCapableKind(kind provider.Kind) bool {
+	return kind == provider.DeepAI
+}
+
+// ChangeAccountProxy 修改某个账号的出口（空串 = 清空/直连）。
+//
+// 只改凭据文件里的 Proxy 字段并重载账号池：对话/目录/积分三条路径下一次请求就走新出口
+// （Transport 的缓存键含代理串，见 internal/deepai/proxy.go），不需要重启也不需要删号重加。
+func (a *App) ChangeAccountProxy(kind string, uid, proxy string) error {
+	k := provider.Kind(strings.TrimSpace(kind))
+	if !proxyCapableKind(k) {
+		return fmt.Errorf("%s 渠道没有「账号出口」概念：代理只在 deepai 渠道生效", k)
+	}
+	if k != provider.DeepAI {
+		return fmt.Errorf("%s 渠道暂不支持修改出口", k)
+	}
+	u, err := deepai.NormalizeProxy(proxy)
+	if err != nil {
+		return fmt.Errorf("代理配置有误：%w", err)
+	}
+	auths, err := auth.LoadDeepAIDir(a.cfg.AuthDir)
+	if err != nil {
+		return err
+	}
+	for _, au := range auths {
+		if au.UID != uid {
+			continue
+		}
+		au.Lock()
+		if u == nil {
+			au.Proxy = ""
+		} else {
+			au.Proxy = u.String()
+		}
+		au.Unlock()
+		if err := au.SaveAtomic(); err != nil { // SaveAtomic 自己持锁，故上面用 Lock/Unlock 配对
+			return fmt.Errorf("保存出口设置失败：%w", err)
+		}
+		// 日志只记 host:port（代理串里可能带凭据，零凭据红线）。
+		log.Printf("deepai 出口已更新 uid=%s proxy=%s", uid, proxyLogValue(u))
+		a.reloadAccounts()
+		return nil
+	}
+	return fmt.Errorf("未找到账号 %s", uid)
+}
+
+// proxyLogValue 只保留 host:port（空 = 直连）。
+func proxyLogValue(u *url.URL) string {
+	if u == nil {
+		return "(直连)"
+	}
+	return u.Host
 }
 
 // SubmitComateSID 提交用户粘贴的 wps_sid Cookie：验证 → 落盘 → 重载账号池。
@@ -4780,10 +4867,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			// 只对上游不提供稳定身份字段的渠道有意义（当前是 CodeArts）：填了就是独立账号，
 			// 留空则按「同一账号重新登录」处理（覆盖该渠道已有条目）。
 			AccountLabel string `json:"account_label"`
+			// Proxy 账号级出口（仅 deepai）：登录时账号还不存在，先暂存、随后随账号落盘。
+			Proxy string `json:"proxy"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		a.muLogin.Lock()
 		a.loginLabel = strings.TrimSpace(req.AccountLabel)
+		a.loginProxy = strings.TrimSpace(req.Proxy)
 		a.loginBackendOpened = false
 		a.muLogin.Unlock()
 		url, err := a.StartLoginFor(req.Channel)
@@ -4976,26 +5066,43 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	// 从本机官方桌面端凭据导入（读出明文 {apiKey, username, isPro} → 与粘贴 Key 同一条通道）。
 	mux.HandleFunc("POST /api/login/deepai_import", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Dir string `json:"dir"`
+			Dir   string `json:"dir"`
+			Proxy string `json:"proxy"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		uid, warn, err := a.ImportDeepAIDesktop(req.Dir)
+		uid, warn, err := a.ImportDeepAIDesktop(req.Dir, req.Proxy)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
 	})
+	// 修改账号出口（账号级代理）。只对「有出口语义」的渠道开放（proxyCapableKind）：
+	// 别的渠道写进去只是静默无效，面板却会显示已设置 —— 那种「看起来配了」更坏。
+	mux.HandleFunc("POST /api/account/proxy", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Channel string `json:"channel"`
+			UID     string `json:"uid"`
+			Proxy   string `json:"proxy"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.ChangeAccountProxy(req.Channel, req.UID, req.Proxy); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 
 	mux.HandleFunc("POST /api/login/deepai_key", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			APIKey string `json:"api_key"`
+			Proxy  string `json:"proxy"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			apiError(w, http.StatusBadRequest, "请求体解析失败")
 			return
 		}
-		uid, warn, err := a.SubmitDeepAIKey(req.APIKey)
+		uid, warn, err := a.SubmitDeepAIKey(req.APIKey, req.Proxy)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return

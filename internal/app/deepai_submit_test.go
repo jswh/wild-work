@@ -71,7 +71,7 @@ func TestSubmitDeepAIKeyPersistsAccount(t *testing.T) {
 	srv := fake.server(t)
 	a, p, dir := newDeepAIApp(t, srv.URL)
 
-	uid, warn, err := a.SubmitDeepAIKey("  key-abc  ")
+	uid, warn, err := a.SubmitDeepAIKey("  key-abc  ", "")
 	if err != nil {
 		t.Fatalf("SubmitDeepAIKey: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSubmitDeepAIKeyPersistsAccount(t *testing.T) {
 	}
 
 	// 第二次粘贴同一枚 Key：允许，但必须告警「重复添加不增加额度」。
-	_, warn2, err := a.SubmitDeepAIKey("key-abc")
+	_, warn2, err := a.SubmitDeepAIKey("key-abc", "")
 	if err != nil {
 		t.Fatalf("重复添加不应报错：%v", err)
 	}
@@ -138,7 +138,7 @@ func TestSubmitDeepAIKeyKeepsRenamedNickname(t *testing.T) {
 	srv := fake.server(t)
 	a, _, dir := newDeepAIApp(t, srv.URL)
 
-	uid, _, err := a.SubmitDeepAIKey("key-abc")
+	uid, _, err := a.SubmitDeepAIKey("key-abc", "")
 	if err != nil {
 		t.Fatalf("首次添加: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSubmitDeepAIKeyKeepsRenamedNickname(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), `"nickname": "DeepAI`, `"nickname": "我的主力号`, 1)), 0o600); err != nil {
 		t.Fatalf("改名: %v", err)
 	}
-	if _, _, err := a.SubmitDeepAIKey("key-abc"); err != nil {
+	if _, _, err := a.SubmitDeepAIKey("key-abc", ""); err != nil {
 		t.Fatalf("重贴: %v", err)
 	}
 	after, _ := os.ReadFile(path)
@@ -163,7 +163,7 @@ func TestSubmitDeepAIKeyRejectsBadKey(t *testing.T) {
 	srv := fake.server(t)
 	a, _, dir := newDeepAIApp(t, srv.URL)
 
-	if _, _, err := a.SubmitDeepAIKey("wrong"); err == nil {
+	if _, _, err := a.SubmitDeepAIKey("wrong", ""); err == nil {
 		t.Fatal("401 必须报错")
 	} else if !strings.Contains(err.Error(), "API Key 无效或已失效") {
 		t.Fatalf("错误文案不可自助：%v", err)
@@ -172,7 +172,7 @@ func TestSubmitDeepAIKeyRejectsBadKey(t *testing.T) {
 	if len(matches) != 0 {
 		t.Fatalf("校验失败不得落盘，实际写了 %v", matches)
 	}
-	if _, _, err := a.SubmitDeepAIKey("   "); err == nil {
+	if _, _, err := a.SubmitDeepAIKey("   ", ""); err == nil {
 		t.Fatal("空 Key 必须在本地拒绝（不打上游）")
 	}
 }
