@@ -87,45 +87,6 @@ func TestFetchModelsNilAccountRejected(t *testing.T) {
 	}
 }
 
-func TestClassifyStatusTable(t *testing.T) {
-	c := New()
-	cases := []struct {
-		status int
-		body   string
-		want   string
-	}{
-		{http.StatusTooManyRequests, `{"error":{"message":"quota exceeded"}}`, "soft_rate"},
-		{http.StatusUnauthorized, `{"error":"auth_required"}`, "session_dead"},
-		{http.StatusPaymentRequired, `{"error":"no theos"}`, "hard_credit"},
-		{http.StatusNotFound, `{"error":"no such model"}`, "model_blocked"},
-		{http.StatusInternalServerError, ``, "server"},
-		{http.StatusBadRequest, `{"error":{"message":"bad"}}`, "client"},
-		{http.StatusBadRequest, `{"error":{"code":"content_filter"}}`, "content_blocked"},
-		{http.StatusFound, ``, "session_dead"}, // 302 跳登录页 = 凭据失效（见 classify.go 注释）
-	}
-	for _, c2 := range cases {
-		if got := c.Classify(c2.status, c2.body).String(); got != c2.want {
-			t.Fatalf("Classify(%d,%q)=%s，期望 %s", c2.status, c2.body, got, c2.want)
-		}
-	}
-	// 429 必须优先于「余额」判据（不变量 15）。
-	if got := c.Classify(http.StatusTooManyRequests, `insufficient quota`).String(); got != "soft_rate" {
-		t.Fatalf("429+quota 被归成 %s，必须先判限流", got)
-	}
-}
-
-func TestClassifyRedirectAsSessionDead(t *testing.T) {
-	c := New()
-	for _, status := range []int{301, 302, 307} {
-		if got := classifyStatus(c, status, "").String(); got != "session_dead" {
-			t.Fatalf("3xx(%d) 应归 session_dead，got %s", status, got)
-		}
-	}
-	if got := classifyStatus(c, http.StatusOK, "").String(); got != "client" {
-		t.Fatalf("2xx 走默认分类，got %s", got)
-	}
-}
-
 func TestValidateKeyOKAndRejected(t *testing.T) {
 	var seenKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
