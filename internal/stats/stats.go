@@ -767,6 +767,7 @@ var (
 		string(provider.ZCode):     true,
 		string(provider.Gemini):    true,
 		string(provider.CodeArts):  true,
+		string(provider.DeepAI):    true, // 漏了它 ⇒ deepai 的 token 与请求都不进平台概览表
 		string(provider.Cline):     true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 		string(provider.OfficeAce): true,
 		string(provider.Comate):    true, // 漏了它 ⇒ comate 的 token 与请求都不进平台概览表

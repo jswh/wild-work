@@ -117,6 +117,8 @@ func identOf(k provider.Kind) string {
 		return "Gemini"
 	case "codearts":
 		return "CodeArts"
+	case "deepai":
+		return "DeepAI"
 	case "cline":
 		return "Cline"
 	case "officeace":

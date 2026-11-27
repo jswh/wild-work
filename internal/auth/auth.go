@@ -522,6 +522,25 @@ func LoadLingxiDir(dir string) ([]*Auth, error) {
 	return loadPrefixed(dir, "lingxi")
 }
 
+// LoadDeepAIDir 扫描 DeepAI Code 渠道凭证（deepai-*.json）。
+//
+// 凭据是一枚**不轮换**的 API Key（存于 AccessToken），来源有四条：面板粘贴 Key、
+// 浏览器 PKCE 登录的回调兑换、粘贴回调 URL、以及官方桌面端 `deepai-account.bin` 导入。
+// 四条的落盘形状完全一致（同一份 auth 文件、同一个 uid 派生规则），故导入路径不需要
+// 任何格式特判。Key 无过期概念 ⇒ ExpiresAt 恒远期；无 refresh/保活/签到。
+//
+// `machineId` 字段存**原始机器 UUID**（出站时算 sha256）——上游按它发放每日免费额度，
+// 每个账号各持一枚，缺了由 internal/deepai.EnsureMachine 在启动/新增时补齐。
+//
+// glob 边界：`deepai-*.json` 要求紧跟 `-`，现存前缀
+// （workbuddy* / workbuddyai- / trae- / qoder* / qwenwork- / glm- / monkeycode- /
+// raccoon- / loomy- / cline- / comate- / lingxi- / modelscope* / officeace- / minimax- /
+// lobsterai- / gemini- / codearts- / zcode- / doubao- / chatgpt-）没有一个以 `deepai` 开头；
+// 反向亦安全（`deepai2-*.json` 之类不会被误收）。
+func LoadDeepAIDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "deepai")
+}
+
 // LoadChatGPTDir 扫描 chatgpt 网页逆向渠道凭证（chatgpt-*.json）。
 //
 // 凭据形态与 ww3 客户端 `auths/<name>.json` **逐字段相同**（嵌套形

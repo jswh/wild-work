@@ -94,6 +94,12 @@ const (
 	// 纯文本对话 + 生图，**无工具调用**、无签到、无额度端点（积分「不适用」）。
 	// ⚠️ 本渠道**必须走代理**才能用（境内不可达），见 internal/chatgpt 包注释。
 	ChatGPT Kind = "chatgpt"
+	// DeepAI Code（api.deepai.org 的 `/deepai_code/*` 协议面）：OpenAI chat 兼容 + 自有
+	// 计费车道（`X-DeepAI-Code-Theos`）与机器指纹头。凭据是一枚**不轮换**的 API Key
+	// （无 refresh 端点），多入口（浏览器 PKCE / 粘贴回调 / 粘贴 Key / 桌面凭据导入）。
+	// 额度是真实积分（术语「Theos」），但**每日免费额度按机器指纹发放** ⇒ 每个账号各持
+	// 一枚机器指纹，不可共用（见 internal/deepai 包注释）。
+	DeepAI Kind = "deepai"
 	// Doubao 豆包（ByteDance，www.doubao.com「工作模式」）：粘贴/扫码型渠道，
 	// 凭据是网页登录 Cookie（sessionid 等）。对话走**桌面客户端身份**（aid=582478、
 	// agent_mode=1 工作模式），不需要 a_bogus 签名；上游无 refresh 端点 ⇒ 无自动续期，
@@ -125,7 +131,7 @@ func BuiltinKinds() map[string]bool {
 var builtinKindList = []Kind{
 	WorkBuddy, WorkBuddyAI, TraeWork, Qoder, QoderCN, QoderCOM,
 	QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo, Minimax, LobsterAI,
-	Gemini, CodeArts, ZCode, Comate, Lingxi, ModelScope, ModelScopeAI, Doubao, ChatGPT,
+	Gemini, CodeArts, DeepAI, ZCode, Comate, Lingxi, ModelScope, ModelScopeAI, Doubao, ChatGPT,
 }
 
 // DisplayNames 渠道**显示名**的 Go 侧真源（面板文案、`/v1/models` 之外的展示处同源）。
@@ -153,6 +159,7 @@ var DisplayNames = map[Kind]string{
 	ZCode:        "ZCode",
 	Gemini:       "Gemini",
 	CodeArts:     "CodeArts",
+	DeepAI:       "DeepAI Code",
 	Cline:        "Cline",
 	OfficeAce:    "OfficeAce",
 	Comate:       "WPS Comate",
