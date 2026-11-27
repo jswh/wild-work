@@ -33,6 +33,7 @@ import (
 	"wild-work/internal/login"
 	logincodearts "wild-work/internal/login_codearts"
 	"wild-work/internal/login_comate"
+	logindeepai "wild-work/internal/login_deepai"
 	logindoubao "wild-work/internal/login_doubao"
 	logingemini "wild-work/internal/login_gemini"
 	"wild-work/internal/login_glm"
@@ -952,6 +953,17 @@ func init() {
 		pollTimeout: loginlingxi.PollTimeout,
 	}
 
+	// DeepAI Code：桌面端式 PKCE 回环登录（spec §8.1）。回调写死
+	// `http://127.0.0.1:<port>/auth-callback` ⇒ 浏览器与网关不同机时走「粘贴回调地址」，
+	// 故同时登记进 manualCallbackKind；回环绑不上也只降级、不置终态（R120）。
+	// openIncognito=false：复用日常浏览器会话正是「同一账号重登」的期望行为。
+	loginFlows[provider.DeepAI] = &loginFlow{
+		Start:       logindeepai.Start,
+		Poll:        wrapPoll(logindeepai.Poll, logindeepai.ErrPending, func(a *App, r logindeepai.Result) error { return a.completeDeepAILogin(r) }),
+		Shutdown:    logindeepai.Shutdown,
+		pollTimeout: logindeepai.FlowTTL,
+	}
+
 	// —— 不通过本表发起的渠道（改造前 A 表的四种语义，现统一为说明文字）——
 	loginFlows[provider.MonkeyCode] = &loginFlow{
 		noFlowReason: "MonkeyCode 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）",
@@ -1070,14 +1082,16 @@ func (a *App) needsPollFor(kind string) bool {
 //   - TraeWork：回调写死 `http://127.0.0.1:<随机端口>/authorize`，且监听只有 5 分钟寿命，
 //     局域网/超时场景下凭证都到不了网关（见 internal/login_trae，issue #98）；
 //   - QwenWork：PKCE(Hydra) 回环回调（`/callback`），redirect_uri 白名单制不可改（R104 前置）；
-//   - Gemini：installed-app 政策限 redirect host 为 localhost（不可改，见 internal/login_gemini）。
+//   - Gemini：installed-app 政策限 redirect host 为 localhost（不可改，见 internal/login_gemini）；
+//   - DeepAI Code：上游只按 `port` 参数把浏览器跳回 `http://127.0.0.1:<port>/auth-callback`
+//     （见 internal/login_deepai），远程 dashboard / 无 GUI 服务器只能靠粘贴回调。
 //
 // 其余渠道的回调**不是**这种形状：有的由网关侧轮询/捕获（glm、小浣熊、OfficeAce），
 // 有的是本机引导页（Loomy），有的是纯服务端轮询无回调环节（workbuddy/qoder/zcode/minimax 系），
 // 不接受也不知道怎么消费用户粘回来的 URL，故一律为 false。
 func manualCallbackKind(kind provider.Kind) bool {
 	switch kind {
-	case provider.CodeArts, provider.LobsterAI, provider.TraeWork, provider.Gemini:
+	case provider.CodeArts, provider.LobsterAI, provider.TraeWork, provider.Gemini, provider.DeepAI:
 		return true
 	}
 	return false
@@ -1818,10 +1832,27 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 // 同账号检测：同一枚 Key 重复添加不增加额度（免费额度按机器/账号发），提示用户换号；
 // 但**不覆盖**用户手工改过的昵称（R137 同款纪律：重贴凭据不得冲掉展示名）。
 func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
+	return a.persistDeepAIAccount(apiKey, "", false)
+}
+
+// persistDeepAIAccount 三个入口（粘贴 Key / 浏览器登录 / 桌面导入）**唯一**的落盘通道。
+//
+// 为什么必须同一条：三者产出的都是「一枚 API Key + 可选 username」，而**账号身份**
+// 决定文件归属——同一账号必须落同一个 `deepai-<uid>.json`，否则重登换 Key 会变成
+// 「重复号 + 每日额度被拆半」（spec §8.5）。各写一份必然漂移。
+//
+// uid 口径：
+//   - username 已知且已有同 username 的账号 ⇒ **复用它的 uid**（重登换 Key = 覆盖自己那条）；
+//   - 否则用 Key 派生（`dai-` + sha256 前 16 位）。
+//
+// 保留项：已有文件的昵称（用户可能改过，R137 同款纪律）、机器指纹（换指纹等于换免费额度
+// 身份，不能因为重贴凭据就重置）。Extra 里的 username/is_pro 随本次结果更新。
+func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string, string, error) {
 	key := deepai.NormalizeKey(apiKey)
 	if key == "" {
 		return "", "", errors.New("API Key 不能为空")
 	}
+	username = strings.TrimSpace(username)
 	// 优先复用已装配的渠道 client（含 upstream.timeout_seconds 的接线与将来的出口配置）；
 	// 未装配时退回默认 client，保证「面板可加号」不依赖 runtimes 注册顺序。
 	client := deepai.New()
@@ -1835,29 +1866,62 @@ func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
 		return "", "", err
 	}
 
+	existing, _ := auth.LoadDeepAIDir(a.cfg.AuthDir)
+	var prevNick, prevMachine string
 	warn := ""
-	prevNick := ""
-	if existing, lerr := auth.LoadDeepAIDir(a.cfg.AuthDir); lerr == nil {
-		for _, e := range existing {
-			if e.AccessTokenValue() == key {
-				warn = fmt.Sprintf("这枚 API Key 与已添加的账号 %s 相同（免费额度按账号/机器发放），"+
-					"重复添加不会增加可用额度。请改用另一个 DeepAI 账号。", e.UID)
-				break
+	for _, e := range existing {
+		if e.UID == uid || (username != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username) && e.UID != "") {
+			// 同 username 的旧条目 ⇒ 这次是「重登换 Key」：复用它的 uid 并覆盖它自己那条。
+			if username != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username) {
+				uid = e.UID
+				log.Printf("deepai 重登换 Key：username 相同，覆盖已有账号 uid=%s", uid)
 			}
-		}
-		for _, e := range existing {
 			if e.UID == uid {
 				prevNick = e.Nickname
-				break
+				prevMachine = e.MachineID
 			}
+			continue
+		}
+		if e.AccessTokenValue() == key {
+			warn = fmt.Sprintf("这枚 API Key 与已添加的账号 %s 相同（免费额度按账号/机器发放），"+
+				"重复添加不会增加可用额度。请改用另一个 DeepAI 账号。", e.UID)
 		}
 	}
 
 	_ = os.MkdirAll(a.cfg.AuthDir, 0o755)
 	nick := strings.TrimSpace(prevNick)
 	if nick == "" {
-		// 没有身份端点可查：用 uid 尾号做可读名（用户可在面板改名）。
-		nick = "DeepAI " + uid[len(uid)-4:]
+		// 没有身份端点可查：username 优先，其次用 uid 尾号（用户可在面板改名）。
+		if username != "" {
+			nick = username
+		} else {
+			nick = "DeepAI " + uid[len(uid)-4:]
+		}
+	}
+	machine := prevMachine
+	if machine == "" {
+		machine = deepai.NewUUID()
+	}
+	extra := map[string]string{}
+	if username != "" {
+		extra[deepai.ExtraUsername] = username
+	}
+	if isPro {
+		extra[deepai.ExtraIsPro] = "true"
+	}
+	if prevMachine != "" {
+		// 保留代理等其它 Extra 键（票 06 写入的出口配置不得因重贴凭据丢失）。
+		for _, e := range existing {
+			if e.UID != uid {
+				continue
+			}
+			for k, v := range e.Extra {
+				if k == deepai.ExtraUsername || k == deepai.ExtraIsPro {
+					continue
+				}
+				extra[k] = v
+			}
+		}
 	}
 	ca := &auth.Auth{
 		Kind:        provider.DeepAI.String(),
@@ -1866,17 +1930,64 @@ func (a *App) SubmitDeepAIKey(apiKey string) (string, string, error) {
 		AccessToken: key,
 		// Key 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
 		ExpiresAt: deepai.FarFutureExpiry(),
-		MachineID: deepai.NewUUID(),
+		MachineID: machine,
+		Extra:     extra,
 		FilePath:  filepath.Join(a.cfg.AuthDir, "deepai-"+uid+".json"),
+	}
+	// 同一账号只允许一个文件：用户名映射可能让 uid 变化（历史文件按 Key 派生），
+	// 落盘前把指向同一 Key/username 的**其它** deepai 文件清掉，避免留下孤儿条目。
+	for _, e := range existing {
+		if e.UID == uid || e.FilePath == "" {
+			continue
+		}
+		sameKey := e.AccessTokenValue() == key
+		sameUser := username != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username)
+		if sameKey || sameUser {
+			if rmErr := os.Remove(e.FilePath); rmErr == nil {
+				log.Printf("deepai 账号归一：删除重复的旧文件 uid=%s（同一账号只保留一条）", e.UID)
+			}
+		}
 	}
 	if err := ca.SaveAtomic(); err != nil {
 		return "", "", fmt.Errorf("保存 DeepAI 凭据失败：%w", err)
 	}
 	// 日志零 token（不变量 2）：只打 uid，绝不打 Key。
-	log.Printf("deepai 账号已添加（粘贴 API Key）uid=%s 同账号告警=%v", uid, warn != "")
+	log.Printf("deepai 账号已保存（uid=%s 来源=%s 同账号告警=%v）", uid, deepaiSource(username, isPro), warn != "")
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.DeepAI)
 	return uid, warn, nil
+}
+
+// deepaiSource 只用于日志：区分三条入口（不落任何凭据信息）。
+func deepaiSource(username string, isPro bool) string {
+	switch {
+	case username != "" && isPro:
+		return "login/pro(pro)"
+	case username != "":
+		return "login"
+	default:
+		return "paste-key"
+	}
+}
+
+// ImportDeepAIDesktop 从本机官方桌面端的凭据文件导入账号（spec §8.3）。
+//
+// 与另外两条入口共用 persistDeepAIAccount：校验、uid 归一、机器指纹、昵称保留全部一致，
+// 因此「桌面导入」与「粘贴同一个 Key」产出的是**同一个文件**（不会重复建号）。
+func (a *App) ImportDeepAIDesktop(explicitDir string) (string, string, error) {
+	cred, err := logindeepai.FindDesktopCredentials(explicitDir)
+	if err != nil {
+		return "", "", err
+	}
+	return a.persistDeepAIAccount(cred.APIKey, cred.Username, cred.IsPro)
+}
+
+// completeDeepAILogin 浏览器 PKCE 登录成功后的落盘（与另外两条入口同一条通道）。
+func (a *App) completeDeepAILogin(r logindeepai.Result) error {
+	if _, _, err := a.persistDeepAIAccount(r.APIKey, r.Username, r.IsPro); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SubmitComateSID 提交用户粘贴的 wps_sid Cookie：验证 → 落盘 → 重载账号池。
@@ -4753,6 +4864,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 				apiError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+		case provider.DeepAI:
+			// 内存会话通道（state 常数时间比对、授权码只兑换一次，见 internal/login_deepai）。
+			// 只粘 code 会被拒：拿不到 state 无法确认归属本次登录。
+			if err := logindeepai.SubmitCallbackURL(req.URL); err != nil {
+				apiError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		case provider.Gemini:
 			// 内存 session 通道（state 逐字比对，见 internal/login_gemini SubmitCallbackURL）。
 			if err := logingemini.SubmitCallbackURL(req.URL); err != nil {
@@ -4854,6 +4972,19 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		uid, warn, err := a.SubmitClineKey(req.APIKey)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
+	// 从本机官方桌面端凭据导入（读出明文 {apiKey, username, isPro} → 与粘贴 Key 同一条通道）。
+	mux.HandleFunc("POST /api/login/deepai_import", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Dir string `json:"dir"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		uid, warn, err := a.ImportDeepAIDesktop(req.Dir)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return

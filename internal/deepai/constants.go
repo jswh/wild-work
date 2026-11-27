@@ -79,3 +79,14 @@ const (
 // 本渠道凭据是一枚不轮换的 API Key，没有「过期时刻」概念；`ExpiresAt` 必须是远期值而不是
 // 0 —— 0 会让 `NeedsRefresh` 恒真，进而每轮刷新都尝试 refresh（不变量 21 同款陷阱）。
 func FarFutureExpiry() int64 { return time.Now().AddDate(80, 0, 0).Unix() }
+
+// 账号文件里的身份字段（Extra 键，单一来源）。
+//
+// Username 是登录链拿到的**账号身份**（`/desktop_auth/exchange/` 的 `username`）：
+// 三个入口都用它判「同一账号」——同一个 username 换了 API Key 就是「重登换 Key」，
+// 必须覆盖同一条账号（否则重复号会把每日额度拆半，spec §8.5）。
+// 粘贴 Key 与桌面导入拿不到 username 时留空，此时退回「按 Key 派生 uid」的旧口径。
+const (
+	ExtraUsername = "username"
+	ExtraIsPro    = "is_pro"
+)
