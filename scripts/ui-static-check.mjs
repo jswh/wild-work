@@ -1705,6 +1705,79 @@ const regexOk = (re) => re.test(raw);
   T.renderSummary();
 }
 
+// ---- 场景 1.99：DeepAI Code 渠道接入面板（票 07）----
+// 这条渠道的四条账号入口、这个渠道独有的「出口」配置，是本票最容易半接线的两处：
+//   - 弹层里四个按钮只要有一个没绑处理函数，就是**死按钮**（本仓已发生 3 次）；
+//   - 代理栏若对所有渠道都显示，用户会在别的渠道上「配了但静默无效」（比不显示更坏）；
+//   - 积分标题必须跟后端下发的 credits_term 走（前端写死渠道名会在换术语时静默失真）。
+{
+  const html99 = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const go99 = readFileSync(new URL("../internal/provider/provider.go", import.meta.url), "utf8");
+  const label99 = new Function("return (" + (raw.match(/const CH_LABEL = (\{[^}]*\});/) || [])[1] + ")")();
+  const class99 = new Function("return (" + (raw.match(/const CH_CLASS = (\{[^}]*\});/) || [])[1] + ")")();
+
+  // ① 显示名 / 短类名 / 展示序（R99 + R142：名字是排序键，改名即改序）
+  check("DeepAI Code 显示名与后端逐字一致", label99.deepai === "DeepAI Code" && /DeepAI:\s*"DeepAI Code"/.test(go99),
+    `js=${label99.deepai}`);
+  check("短类名进 CH_CLASS（缺则 chColor 回退 #6366f1，徽章与折线撞色）", class99.deepai === "deepai",
+    `class=${class99.deepai}`);
+  {
+    // 汇总条顺序必须是**派生**的：把 CH_LABEL 与派生的序按同一表达式重算一遍再比对位置，
+    // 免得「断言写在文档里、表达式早就改成手写数组」这条静默漂移。
+    const expr = (raw.match(/const CH_SUMMARY_ORDER = ([\s\S]*?);\n/) || [])[1] || "[]";
+    const order = new Function("CH_LABEL", "chLabel", `return (${expr});`)(label99, (k) => label99[k] || k);
+    const i = order.indexOf("deepai");
+    // 位置判据用**相邻渠道**而不是写死「在 doubao 之前」：豆包的中文显示名（`豆包`）
+    // 按字节序排在所有 ASCII 名之后，所以 deepai 的实际邻居是 codearts / gemini
+    // （spec §12.3-2 写的「在 Doubao 之前」是把显示名当成英文的笔误，按 R142 的规则算不出来）。
+    check("汇总条顺序由 CH_LABEL 派生且 deepai 落在 codearts 之后、gemini 之前（R142 字节序）",
+      i > 0 && order[i - 1] === "codearts" && order[i + 1] === "gemini", `i=${i}`);
+    check("CH_SUMMARY_ORDER 仍是派生（不得出现手写数组）", !/const CH_SUMMARY_ORDER = \[/.test(raw));
+  }
+
+  // ② 积分口径：有真实余额端点 ⇒ 不在「不适用」名单；真多账号池 ⇒ 不在虚拟账号名单
+  check("deepai **不在** NO_CREDITS_BUILTIN（有 /theos 余额端点，显示数字而非「不适用」）",
+    !/const NO_CREDITS_BUILTIN = new Set\(\[[^\]]*"deepai"/.test(raw));
+  check("deepai **不在** VIRTUAL_ACCOUNTS（真多账号池：可删/可停/可改名、默认可见）",
+    !/const VIRTUAL_ACCOUNTS = new Set\(\[[^\]]*"deepai/.test(raw));
+  check("deepai 在 NO_EXPLICIT_CHECKIN（无独立签到：/theos 的 nonce 回传是刷新副作用）",
+    /const NO_EXPLICIT_CHECKIN = new Set\(\[[^\]]*"deepai"/.test(raw) && /deepai: "随探针自动签到"/.test(raw));
+
+  // ③ 添加弹层：四段 + 一条共用出口输入，且**每个按钮都绑了处理函数**（防死按钮）
+  {
+    const sections = ["btnDeepAILogin", "btnDeepAICallbackSubmit", "btnDeepAIKeySubmit", "btnDeepAIImport"];
+    const allButtons = sections.every((id) => html99.includes(`id="${id}"`));
+    const allBound = sections.every((id) => new RegExp(`\\$\\("${id}"\\)\\.onclick = `).test(raw));
+    check("deepaiOverlay 四段（登录 / 粘贴回调 / 粘贴 Key / 导入）都在且按钮全部绑定",
+      allButtons && allBound, `buttons=${allButtons} bound=${allBound}`);
+    check("弹层有**一条共用**的出口输入（四条入口都吃它，不是每段各一个）",
+      (html99.match(/id="deepaiProxyInput"/g) || []).length === 1 &&
+      /function deepaiProxy\(\)/.test(raw));
+    // 出口必须真的被三个写入口/登录入口带上：只画输入框不算接线。
+    check("三条入口把出口带上（浏览器登录 / 粘贴 Key / 桌面导入）",
+      /await startLogin\("deepai", "", proxy\)/.test(raw) &&
+      /\{ api_key: key, proxy: deepaiProxy\(\) \}/.test(raw) &&
+      /\{ proxy: deepaiProxy\(\) \}/.test(raw));
+  }
+
+  // ④ 账号设置弹层：存在，且代理栏只对有出口语义的渠道显示
+  check("accountProxyOverlay 存在（改名弹层已升级为「账号设置」）",
+    html99.includes('id="accountProxyOverlay"') && !html99.includes('id="renameOverlay"'));
+  check("代理栏按渠道白名单显示（只有 Transport 真读 Proxy 的渠道才给填）",
+    /const PROXY_ACCT_CHANNELS = new Set\(\["deepai"\]\)/.test(raw) &&
+    /\$\("acctProxyRow"\)\.classList\.toggle\("hidden", !canProxy\)/.test(raw));
+  check("出口只在**真的改过**时才提交（只改显示名不该把已配的出口冲掉）",
+    /if \(proxy !== \(acctSetProxy0 \|\| ""\)\.trim\(\)\)/.test(raw) &&
+    /await api\("\/api\/account\/proxy"/.test(raw));
+
+  // ⑤ 积分标题读后端下发的术语：前端不得写死渠道术语
+  check("积分标题 / 卡片文案走 creditTermOf+creditTermWord（credits_term 是唯一真源）",
+    /const creditTermOf = \(a\) => \(a && a\.credits_term\) \|\| ""/.test(raw) &&
+    /\$\{creditTermWord\(creditTermOf\(detailAcct\)\)\}明细/.test(raw));
+  check("前端没有任何写死的渠道术语字面量（写死会让换术语时静默失真）",
+    !/["'`]Theos["'`]/.test(raw) && !/["'`]魔粒["'`]/.test(raw));
+}
+
 // ---- 输出 ----
 let failed = 0;
 for (const [name, pass, extra] of results) {
