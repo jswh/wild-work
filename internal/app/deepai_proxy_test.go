@@ -146,3 +146,28 @@ func TestPersistKeepsProxyAcrossLoginEntries(t *testing.T) {
 	}
 	_ = deepai.ExtraUsername
 }
+
+// TestAccountViewsExposeProxyOnlyForDeepAI 出口只下发给「有出口语义」的渠道，
+// 否则面板会显示一个静默无效的值（其它渠道的 Transport 根本不读它）。
+func TestAccountViewsExposeProxyOnlyForDeepAI(t *testing.T) {
+	srv := anyKeyUpstream(t)
+	a, st, dir := newDeepAIApp(t, srv.URL)
+	uid, _, err := a.SubmitDeepAIKey("key-p", "http://5.5.5.5:1080")
+	if err != nil {
+		t.Fatalf("加号: %v", err)
+	}
+	found := false
+	for _, v := range a.accountViews() {
+		if v.UID == uid {
+			found = true
+			if v.Proxy != "http://5.5.5.5:1080" {
+				t.Fatalf("deepai 账号应带出口，实际 %q", v.Proxy)
+			}
+		} else if v.Proxy != "" {
+			t.Fatalf("非出口渠道 %s 不该下发 proxy（%q）", v.Group, v.Proxy)
+		}
+	}
+	if !found {
+		t.Fatalf("没找到刚加的账号（state=%v, dir=%s）", st, dir)
+	}
+}

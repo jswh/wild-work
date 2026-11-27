@@ -4484,6 +4484,11 @@ type AccountView struct {
 	// 前端据此把它渲染成「Token 计数」面板（文案/单位/合计口径都随之切换），
 	// 且**不并入积分合计**——即「与积分分开统计和显示」（用户 2026-10-17 的要求）。
 	CreditsUnit string `json:"credits_unit,omitempty"`
+	// Proxy 该账号的出口（代理串，空 = 直连/跟随环境代理）。
+	// **只对「有出口语义」的渠道下发**（proxyCapableKind）——别的渠道 Transport 不读它，
+	// 下发只会让面板显示一个静默无效的值。这是唯一把出口送到前端的路径：
+	// 卡片/汇总条/tooltip 都不渲染它，只有「账号设置」弹层拿它回填输入框。
+	Proxy string `json:"proxy,omitempty"`
 	// CreditsTerm 渠道级**显示术语**（空 = 「积分」）：ModelScope 站内叫「魔粒」。
 	// 只改文案，不改计量口径（仍是积分，并入合计）；与 credits_unit 并列的单一来源。
 	CreditsTerm string `json:"credits_term,omitempty"`
@@ -4643,8 +4648,25 @@ func (a *App) GetState() State {
 	return st
 }
 
+// deepaiProxies 一次性读出 deepai 账号的 uid → 出口（accountViews 里不再逐号解析文件）。
+func (a *App) deepaiProxies() map[string]string {
+	list, err := auth.LoadDeepAIDir(a.cfg.AuthDir)
+	if err != nil {
+		log.Printf("读取 deepai 凭据失败（出口列将显示为空）：%v", err)
+		return nil
+	}
+	out := make(map[string]string, len(list))
+	for _, au := range list {
+		au.RLock()
+		out[au.UID] = au.Proxy
+		au.RUnlock()
+	}
+	return out
+}
+
 func (a *App) accountViews() []AccountView {
 	statuses := a.allStatuses()
+	proxies := a.deepaiProxies()
 	out := make([]AccountView, 0, len(statuses))
 	for _, s := range statuses {
 		group := a.accountGroup(s.UID)
@@ -4677,6 +4699,11 @@ func (a *App) accountViews() []AccountView {
 			RefreshTokenMissing:       missingRT,
 			RefreshTokenMissingReason: missingRTWhy,
 		})
+		if proxyCapableKind(provider.Kind(group)) {
+			v := out[len(out)-1]
+			v.Proxy = proxies[s.UID]
+			out[len(out)-1] = v
+		}
 	}
 	// 面板统一渠道序展示（R142）：按显示名字节序，自定义渠道钉最末。
 	sortChannelsByOrder(out, func(v AccountView) provider.Kind { return provider.Kind(v.Group) })

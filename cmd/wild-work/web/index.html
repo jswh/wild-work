@@ -624,6 +624,21 @@
     <div class="modal-body settings-body">
 
       <div class="cfg-section">
+        <div class="cfg-heading">出口（可选）</div>
+        <div class="hint" style="margin-bottom:8px">
+          填了就让这个账号<b>整个</b>从这条代理出去（对话 / 目录 / 积分都走它；登录调用不走）。
+          <b>每号一个出口</b>：住宅 IP 到期改这里即可，不用删号重加。
+          留空 = 直连（跟随环境里的 <code>HTTP(S)_PROXY</code> / <code>NO_PROXY</code>）。
+          支持 <code>host:port</code>、<code>http(s)://</code>、<code>socks5://</code>；
+          写坏会当场报错并<b>拒绝直连</b>（悄悄直连会让你以为在用独立出口，实际全挤在同一 IP）。
+          下面四条方式都会带上这个出口。
+        </div>
+        <input id="deepaiProxyInput" class="input grow" spellcheck="false" autocomplete="off"
+               placeholder="例：http://127.0.0.1:1080 或 1.2.3.4:8080（留空 = 直连）"
+               style="width:100%;font-family:ui-monospace,monospace">
+      </div>
+
+      <div class="cfg-section">
         <div class="cfg-heading">方式一：浏览器登录（推荐）</div>
         <div class="hint" style="margin-bottom:8px">
           用<b>系统浏览器</b>打开 DeepAI Code 的授权页，登录后浏览器会跳回本机回环端口，
@@ -1052,13 +1067,22 @@
   </div>
 </div>
 
-<!-- 显示名修改弹层 -->
-<div class="overlay hidden" id="renameOverlay">
+<!-- 账号设置弹层（显示名 + 出口；出口栏只对「有出口语义」的渠道显示） -->
+<div class="overlay hidden" id="accountProxyOverlay">
   <div class="modal">
-    <div class="modal-title">修改显示名</div>
+    <div class="modal-title">账号设置</div>
     <div class="modal-body">
       <div class="hint" style="margin:0 0 6px">账号：<span id="rnUid" style="font-family:ui-monospace,monospace"></span></div>
       <input id="rnInput" class="input grow" style="width:100%" spellcheck="false" maxlength="60" placeholder="输入新的显示名（1-60 字符）">
+      <div id="acctProxyRow" class="hidden" style="margin-top:12px">
+        <div class="hint" style="margin:0 0 6px">出口（该账号的代理；留空 = 直连）</div>
+        <input id="acctProxyInput" class="input grow" style="width:100%;font-family:ui-monospace,monospace"
+               spellcheck="false" autocomplete="off" placeholder="例：http://127.0.0.1:1080 或 1.2.3.4:8080">
+        <div class="hint" style="margin-top:6px">
+          对话 / 目录 / 积分都从这个出口出去；写坏会报错并拒绝直连（不会悄悄退回直连）。
+          与「设置 → 备用上游通道」无关：那条是全局按需取用的通道，这里管的是<b>这个号</b>的出口。
+        </div>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnRenameCancel">取消</button>

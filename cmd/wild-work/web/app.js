@@ -2329,7 +2329,7 @@ async function importLocal(channel) {
   }
 }
 
-async function startLogin(channel, accountLabel) {
+async function startLogin(channel, accountLabel, proxy) {
   // 粘贴型渠道（ModelScope 两区 / ChatGPT Web）没有后端登录编排：直接用同一个粘贴层，
   // 否则 ⟳ 会打 /api/login/start 并报 unknown login provider（死按钮）。
   if (isModelScopeCh(channel)) return promptLogin(channel);
@@ -2342,7 +2342,9 @@ async function startLogin(channel, accountLabel) {
   // （2026-10-18：卡片 ⟳ 曾直接 startLogin('officeace') 而只弹 unknown login provider。）
   if (channel === "officeace") return startOfficeAceWebLogin();
   try {
-    const r = await api("/api/login/start", { channel, account_label: accountLabel || "" });
+    // proxy：账号级出口（仅 deepai 消费）。登录那一刻账号还不存在，后端先暂存、
+    // 等凭据换回来再随账号落盘 —— 所以必须带在 start 上，而不是落盘之后再补。
+    const r = await api("/api/login/start", { channel, account_label: accountLabel || "", proxy: proxy || "" });
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = `添加 ${chLabel(channel)} 账号`;
@@ -3031,10 +3033,17 @@ function openDeepAIDialog() {
 // 方式一：浏览器登录（复用通用登录弹层：window.open 授权页 + 3s 轮询 + 粘贴回调行）。
 // 为什么不在这里自己轮询：通用那套已经把「login_busy 归零 / login_error 终态 /
 // 无痕窗口不能 window.open」这些坑踩平了，再来一份必然漂移。
+// deepaiProxy 弹层里那条共用「出口（可选）」输入（四条方式都吃它）。
+function deepaiProxy() {
+  const el = $("deepaiProxyInput");
+  return el ? (el.value || "").trim() : "";
+}
+
 async function startDeepAIBrowserLogin() {
   $("deepaiErr").textContent = "";
+  const proxy = deepaiProxy();
   closeDeepAIDialog();
-  await startLogin("deepai");
+  await startLogin("deepai", "", proxy);
 }
 
 // 方式二：粘贴回调地址（浏览器与网关不同机时）。与通用弹层里的「提交」同一个端点、
@@ -3061,7 +3070,7 @@ async function importDeepAIDesktop() {
   $("deepaiErr").style.color = "var(--danger)";
   $("deepaiErr").textContent = "读取中…";
   try {
-    const r = await api("/api/login/deepai_import", {});
+    const r = await api("/api/login/deepai_import", { proxy: deepaiProxy() });
     $("deepaiErr").textContent = "";
     toast(chLabel("deepai") + " 账号已导入" + (r.warning ? "：" + r.warning : ""));
     closeDeepAIDialog();
@@ -3076,6 +3085,7 @@ async function importDeepAIDesktop() {
 function closeDeepAIDialog() {
   $("deepaiKeyInput").value = "";
   $("deepaiCallbackInput").value = "";
+  if ($("deepaiProxyInput")) $("deepaiProxyInput").value = "";
   $("deepaiErr").textContent = "";
   $("deepaiOverlay").classList.add("hidden");
 }
@@ -3086,7 +3096,7 @@ async function submitDeepAIKey() {
   btn.disabled = true;
   $("deepaiErr").textContent = "验证中…";
   try {
-    const r = await api("/api/login/deepai_key", { api_key: key });
+    const r = await api("/api/login/deepai_key", { api_key: key, proxy: deepaiProxy() });
     $("deepaiKeyInput").value = "";
     closeDeepAIDialog();
     if (r && r.warning) toast(r.warning, 8000);
@@ -4268,30 +4278,52 @@ async function clearAdminPassword() {
   await ensureSession();
 }
 
-// ---------- 显示名修改弹层 ----------
-let renameUid = null;
+// ---------- 账号设置弹层（显示名 + 出口） ----------
+// 出口（账号级代理）只在 deepai 这类「Transport 真的按账号选出口」的渠道上有意义；
+// 别的渠道写进去是静默无效 —— 那种「看起来配了」比不显示更坏，所以代理栏按渠道隐藏。
+const PROXY_ACCT_CHANNELS = new Set(["deepai"]);
+let acctSetUid = null;
+let acctSetGroup = "";
+let acctSetProxy0 = "";
 
 function openRename(uid, currentName) {
   if (uid === "oczen-anon") { toast("OpenCodeZen 匿名通道账号不可改名"); return; }
   if (uid === "kilo-anonymous") { toast("Kilo 免费池账号不可改名"); return; }
-  renameUid = uid;
+  const a = ((state && state.accounts) || []).find((x) => x.uid === uid) || {};
+  acctSetUid = uid;
+  acctSetGroup = a.group || "";
+  acctSetProxy0 = a.proxy || "";
   $("rnUid").textContent = shortUid(uid);
   $("rnInput").value = currentName === shortUid(uid) ? "" : (currentName || "");
-  $("renameOverlay").classList.remove("hidden");
+  const canProxy = PROXY_ACCT_CHANNELS.has(acctSetGroup);
+  $("acctProxyRow").classList.toggle("hidden", !canProxy);
+  $("acctProxyInput").value = canProxy ? acctSetProxy0 : "";
+  $("accountProxyOverlay").classList.remove("hidden");
   $("rnInput").focus();
 }
 
 function closeRename() {
-  $("renameOverlay").classList.add("hidden");
-  renameUid = null;
+  $("accountProxyOverlay").classList.add("hidden");
+  if ($("acctProxyInput")) $("acctProxyInput").value = "";
+  acctSetUid = null;
+  acctSetGroup = "";
+  acctSetProxy0 = "";
 }
 
 async function saveRename() {
-  if (!renameUid) return;
+  if (!acctSetUid) return;
   const nickname = $("rnInput").value.trim();
   if (!nickname) { toast("显示名不能为空"); return; }
   try {
-    await api("/api/account/nickname", { uid: renameUid, nickname });
+    await api("/api/account/nickname", { uid: acctSetUid, nickname });
+    // 出口只在「有出口语义」且真的改过时才提交：避免「只改显示名」顺手把已配的出口冲掉。
+    if (PROXY_ACCT_CHANNELS.has(acctSetGroup)) {
+      const proxy = ($("acctProxyInput").value || "").trim();
+      if (proxy !== (acctSetProxy0 || "").trim()) {
+        await api("/api/account/proxy", { channel: acctSetGroup, uid: acctSetUid, proxy });
+        toast(proxy ? "出口已更新（下一次请求生效）" : "出口已清空，改为直连");
+      }
+    }
     toast("显示名已更新");
     closeRename();
     loadState();
@@ -4813,7 +4845,7 @@ function bind() {
 
   // 点击弹层空白处关闭
   $("settingsOverlay").onclick = (e) => { if (e.target === $("settingsOverlay")) closeSettings(); };
-  $("renameOverlay").onclick = (e) => { if (e.target === $("renameOverlay")) closeRename(); };
+  $("accountProxyOverlay").onclick = (e) => { if (e.target === $("accountProxyOverlay")) closeRename(); };
   $("helpOverlay").onclick = (e) => { if (e.target === $("helpOverlay")) closeHelp(); };
 
   // 积分明细浮窗的外部关闭路径（✕ / 点浮窗之外 / Esc）：document 级委托，绑定一次。
