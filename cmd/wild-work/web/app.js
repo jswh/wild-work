@@ -3021,13 +3021,61 @@ async function submitChatGPTAuth() {
 function openDeepAIDialog() {
   $("deepaiTitle").textContent = "添加 " + chLabel("deepai") + " 账号";
   $("deepaiKeyInput").value = "";
+  $("deepaiCallbackInput").value = "";
+  $("deepaiErr").style.color = "var(--danger)";
   $("deepaiErr").textContent = "";
   $("deepaiOverlay").classList.remove("hidden");
   setTimeout(() => $("deepaiKeyInput").focus(), 30);
 }
 // closeDeepAIDialog 关闭即清空输入：它是凭据，不得留在 DOM 里。
+// 方式一：浏览器登录（复用通用登录弹层：window.open 授权页 + 3s 轮询 + 粘贴回调行）。
+// 为什么不在这里自己轮询：通用那套已经把「login_busy 归零 / login_error 终态 /
+// 无痕窗口不能 window.open」这些坑踩平了，再来一份必然漂移。
+async function startDeepAIBrowserLogin() {
+  $("deepaiErr").textContent = "";
+  closeDeepAIDialog();
+  await startLogin("deepai");
+}
+
+// 方式二：粘贴回调地址（浏览器与网关不同机时）。与通用弹层里的「提交」同一个端点、
+// 同一套错误语义（state 不匹配 / 只粘了 code 都会被拒，且流程不终止）。
+async function submitDeepAICallback() {
+  const url = ($("deepaiCallbackInput").value || "").trim();
+  if (!url) { $("deepaiErr").textContent = "请先粘贴浏览器地址栏里的完整链接"; return; }
+  $("deepaiErr").style.color = "var(--muted)";
+  $("deepaiErr").textContent = "提交中…";
+  try {
+    await api("/api/login/callback", { url });
+    $("deepaiCallbackInput").value = "";
+    closeDeepAIDialog();
+    toast("已提交回调地址，正在换取凭据…");
+    startLoginPoll();
+  } catch (e) {
+    $("deepaiErr").style.color = "var(--danger)";
+    $("deepaiErr").textContent = e.message || "提交失败";
+  }
+}
+
+// 方式四：从本机桌面端凭据导入（与粘贴 Key 同一条落盘通道）。
+async function importDeepAIDesktop() {
+  $("deepaiErr").style.color = "var(--danger)";
+  $("deepaiErr").textContent = "读取中…";
+  try {
+    const r = await api("/api/login/deepai_import", {});
+    $("deepaiErr").textContent = "";
+    toast(chLabel("deepai") + " 账号已导入" + (r.warning ? "：" + r.warning : ""));
+    closeDeepAIDialog();
+    await loadState();
+    refreshFees();
+  } catch (e) {
+    $("deepaiErr").style.color = "var(--danger)";
+    $("deepaiErr").textContent = e.message || "导入失败";
+  }
+}
+
 function closeDeepAIDialog() {
   $("deepaiKeyInput").value = "";
+  $("deepaiCallbackInput").value = "";
   $("deepaiErr").textContent = "";
   $("deepaiOverlay").classList.add("hidden");
 }
@@ -4398,6 +4446,10 @@ function bind() {
   $("btnAddModelScopeAI").onclick = () => promptLogin("modelscopeai");
   $("btnAddChatGPT").onclick = () => promptLogin("chatgpt");
   $("btnAddDeepAI").onclick = () => promptLogin("deepai");
+  // 四段入口**全部**必须绑上处理函数（死按钮事故已发生 3 次，ui-static-check 有护栏）。
+  $("btnDeepAILogin").onclick = startDeepAIBrowserLogin;
+  $("btnDeepAICallbackSubmit").onclick = submitDeepAICallback;
+  $("btnDeepAIImport").onclick = importDeepAIDesktop;
   $("btnDeepAIKeySubmit").onclick = submitDeepAIKey;
   $("btnDeepAICancel").onclick = closeDeepAIDialog;
   $("btnMsSubmit").onclick = submitMsToken;

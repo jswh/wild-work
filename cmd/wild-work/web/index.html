@@ -615,16 +615,45 @@
   </div>
 </div>
 
-<!-- DeepAI Code（桌面端网页逆向通道）：本票只落地「粘贴 API Key」一条入口。
-     浏览器 PKCE 登录 / 粘贴回调地址 / 桌面凭据导入 / 单账号代理 是后续票的交付物，
-     届时**在同一个弹层里**加分段（不要另开弹层：一个渠道一个入口是既定的面板纪律）。 -->
+<!-- DeepAI Code（桌面端网页逆向通道）：一个弹层、四段入口（登录 / 粘贴回调 / 粘贴 Key /
+     桌面导入）。四条入口最终落在**同一条**落盘通道上（app.persistDeepAIAccount），
+     所以同一个账号无论从哪进都只有一个凭据文件。 -->
 <div class="overlay hidden" id="deepaiOverlay">
   <div class="modal modal-wide">
     <div class="modal-title" id="deepaiTitle">添加 DeepAI Code 账号</div>
     <div class="modal-body settings-body">
 
       <div class="cfg-section">
-        <div class="cfg-heading">方式一：粘贴桌面端 API Key</div>
+        <div class="cfg-heading">方式一：浏览器登录（推荐）</div>
+        <div class="hint" style="margin-bottom:8px">
+          用<b>系统浏览器</b>打开 DeepAI Code 的授权页，登录后浏览器会跳回本机回环端口，
+          网关自动换取 API Key 并添加账号（你不需要看见 Key）。
+          登录页复用你日常浏览器的会话是<b>有意为之</b>（同一账号重登）；要加<b>第二个号</b>，
+          请先在 DeepAI 网页版退出、或用无痕窗口登录。
+        </div>
+        <div class="hint" style="margin-top:6px">
+          <button class="btn small primary" id="btnDeepAILogin">浏览器登录</button>
+        </div>
+      </div>
+
+      <div class="cfg-section">
+        <div class="cfg-heading">方式二：粘贴回调地址（浏览器不在网关同一台机器上时）</div>
+        <div class="hint" style="margin-bottom:8px">
+          上游只允许回调到 <code>http://127.0.0.1:&lt;端口&gt;/auth-callback</code>。当你在<b>别的机器</b>
+          上打开面板时，浏览器会停在那条打不开的地址上 —— 把地址栏里的<b>完整链接</b>
+          （含 <code>?code=…&amp;state=…</code>）复制到下面提交，网关会立刻换取凭据。
+          只粘 <code>code</code> 不行：没有 <code>state</code> 无法确认它属于本次登录。
+        </div>
+        <input id="deepaiCallbackInput" class="input grow" spellcheck="false" autocomplete="off"
+               placeholder="粘贴 http://127.0.0.1:端口/auth-callback?code=…&state=…"
+               style="width:100%;font-family:ui-monospace,monospace">
+        <div class="hint" style="margin-top:6px">
+          <button class="btn small primary" id="btnDeepAICallbackSubmit">提交回调地址</button>
+        </div>
+      </div>
+
+      <div class="cfg-section">
+        <div class="cfg-heading">方式三：粘贴桌面端 API Key</div>
         <div class="hint" style="margin-bottom:8px">
           在 DeepAI Code 桌面端登录后，从它的凭据里取 <code>Api-Key</code> 的值粘到下面。
           本工具会用一次<b>零费用</b>的目录请求校验（不打对话、不动签到），通过才落盘到
@@ -635,6 +664,18 @@
                style="width:100%;font-family:ui-monospace,monospace">
         <div class="hint" style="margin-top:6px">
           <button class="btn small primary" id="btnDeepAIKeySubmit">验证并添加</button>
+        </div>
+      </div>
+
+      <div class="cfg-section">
+        <div class="cfg-heading">方式四：从本机 DeepAI Code 桌面端导入</div>
+        <div class="hint" style="margin-bottom:8px">
+          读取官方桌面端的凭据文件（<code>~/.deepai-code/userdata/secrets/deepai-account.bin</code>，
+          或环境变量 <code>T3CODE_HOME</code> 指向的目录）。与粘贴 Key 走同一条校验+落盘通道，
+          不会重复建号；找不到就明确报「未找到」，不会猜路径。
+        </div>
+        <div class="hint" style="margin-top:6px">
+          <button class="btn small primary" id="btnDeepAIImport">从桌面端导入</button>
         </div>
       </div>
 
