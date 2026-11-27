@@ -93,6 +93,9 @@ func (c *Client) stateOf(uid string) *acctState {
 
 // stateLocked 同 stateOf，但要求调用方已持 states.mu（避免同一把锁重入死锁）。
 func (c *Client) stateLocked(uid string) *acctState {
+	if c.states.m == nil { // 零值 Client（测试里的结构体字面量）也能用
+		c.states.m = make(map[string]*acctState)
+	}
 	st := c.states.m[uid]
 	if st == nil {
 		st = &acctState{}
@@ -114,7 +117,10 @@ func (c *Client) beginCheckin(uid string, now time.Time) (string, string, bool) 
 	// 每次探测都算一次「尝试」：30s 兜底间隔防的是「连续两次探测」而不是「连续两次回传」，
 	// 否则刚拿到 nonce 的那一轮会被立刻回传（上游看到的就是高频签到）。
 	st.attemptAt = now
-	return st.nonce, beacon, due
+	if !due {
+		return "", beacon, false
+	}
+	return st.nonce, beacon, true
 }
 
 // finishCheckin 请求成功后推进环：记住新 nonce（下一轮回传）与成功时刻。
@@ -137,9 +143,9 @@ func (c *Client) finishCheckin(uid string, now time.Time, info theosInfo, acked 
 	if v, err := balanceInt(info.Balance); err == nil {
 		st.remain, st.hasRemain = v, true
 	}
-	if info.Enabled {
-		st.refusedUntil = time.Time{} // 上游认可这枚 Key ⇒ 之前的静默锁自然失效
-	}
+	// **不**在这里清 refusedUntil：被拒的那一轮之后，下一轮「不带 nonce 的余额探测」照样
+	// 能拿到 200（被拒的只是回传动作），若在这里解锁，6h 静默锁会被每 10 分钟的刷新
+	// 立刻抹掉 ⇒ 又变成每轮都往上游撞一次 check_in_refused。锁只按时间自然到期。
 }
 
 // lockCheckin 打静默锁（命中 `check_in_refused`）。

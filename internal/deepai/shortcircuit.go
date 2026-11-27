@@ -64,6 +64,9 @@ func (c *Client) noteExhausted(uid, model string, until time.Time) bool {
 	}
 	c.exhaust.mu.Lock()
 	defer c.exhaust.mu.Unlock()
+	if c.exhaust.m == nil { // 零值 Client 也能用
+		c.exhaust.m = make(map[string]time.Time)
+	}
 	c.exhaust.m[key] = until
 	log.Printf("deepai theos exhausted uid=%s model=%s until=%s（本模型本地短路至恢复点）",
 		uid, model, until.Format(time.RFC3339))

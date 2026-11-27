@@ -140,8 +140,9 @@ func balanceInt(raw string) (int64, error) {
 // typedError 让自愈链能 `errors.As` 取到分类（R79）：额度路径的 401/3xx 必须能被识别成
 // `ErrSessionDead`，否则面板永远显示旧的 0 而看不到「凭据失效」。
 func typedError(status int, msg string) error {
+	kind, _ := classifyKind(status, msg)
 	return &provider.Error{
-		Kind:   New().Classify(status, msg),
+		Kind:   kind,
 		Status: status,
 		Msg:    msg,
 	}

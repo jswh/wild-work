@@ -207,6 +207,28 @@ func TestCheckinRefusedLocksWithoutError(t *testing.T) {
 	}
 }
 
+// TestCheckinLockNotClearedBySuccessfulProbe 锁期内「不带 nonce 的余额探测」成功，
+// **不得**把 6h 静默锁提前抹掉（否则每 10 分钟的刷新都会再撞一次 check_in_refused）。
+func TestCheckinLockNotClearedBySuccessfulProbe(t *testing.T) {
+	resp := &theosResponder{handles: []func(http.ResponseWriter){
+		statusOK(theosJSON("50", "2026-11-27T04:03:00+00:00", "n1")),
+		statusOK(theosJSON("50", "2026-11-27T04:03:00+00:00", "n2")),
+	}}
+	c := newTheosServer(t, resp)
+	a := testAuth("dai-a", "k", "")
+	if _, err := c.UserResource(a); err != nil {
+		t.Fatalf("首探: %v", err)
+	}
+	lockUntil := time.Now().Add(checkinRefusedLock)
+	c.lockCheckin("dai-a", time.Now(), checkinRefusedLock)
+	if _, err := c.UserResource(a); err != nil {
+		t.Fatalf("锁期探测: %v", err)
+	}
+	if got := c.refusedUntil("dai-a"); got.Before(lockUntil.Add(-time.Second)) {
+		t.Fatalf("成功的余额探测把静默锁抹掉了：%s < %s", got, lockUntil)
+	}
+}
+
 // TestCheckinMinInterval 距上次尝试不足 30s ⇒ 不回传（兜底间隔）。
 func TestCheckinMinInterval(t *testing.T) {
 	st := &acctState{nonce: "n", seconds: 2, ackedAt: time.Now().Add(-time.Hour)}
