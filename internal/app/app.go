@@ -1867,24 +1867,34 @@ func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string,
 	}
 
 	existing, _ := auth.LoadDeepAIDir(a.cfg.AuthDir)
+	// ① 先定 uid：同 username 的旧条目 ⇒ 复用它的 uid（重登换 Key = 覆盖自己那条）。
+	for _, e := range existing {
+		if username != "" && e.UID != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username) {
+			if e.UID != uid {
+				log.Printf("deepai 重登换 Key：username 相同，覆盖已有账号 uid=%s", e.UID)
+			}
+			uid = e.UID
+			break
+		}
+	}
+	// ② 再收既有信息：昵称 / 机器指纹 / 其它 Extra（票 06 的代理配置），
+	//    并判「同一枚 Key 再贴一次」（重复添加不增加额度，但允许）。
 	var prevNick, prevMachine string
+	extra := map[string]string{}
 	warn := ""
 	for _, e := range existing {
-		if e.UID == uid || (username != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username) && e.UID != "") {
-			// 同 username 的旧条目 ⇒ 这次是「重登换 Key」：复用它的 uid 并覆盖它自己那条。
-			if username != "" && strings.EqualFold(e.Extra[deepai.ExtraUsername], username) {
-				uid = e.UID
-				log.Printf("deepai 重登换 Key：username 相同，覆盖已有账号 uid=%s", uid)
+		if e.UID == uid {
+			prevNick, prevMachine = e.Nickname, e.MachineID
+			for k, v := range e.Extra {
+				if k == deepai.ExtraUsername || k == deepai.ExtraIsPro {
+					continue
+				}
+				extra[k] = v
 			}
-			if e.UID == uid {
-				prevNick = e.Nickname
-				prevMachine = e.MachineID
+			if e.AccessTokenValue() == key {
+				warn = "这枚 API Key 与已添加的账号 " + e.UID + " 相同（免费额度按账号/机器发放），" +
+					"重复添加不会增加可用额度。请改用另一个 DeepAI 账号。"
 			}
-			continue
-		}
-		if e.AccessTokenValue() == key {
-			warn = fmt.Sprintf("这枚 API Key 与已添加的账号 %s 相同（免费额度按账号/机器发放），"+
-				"重复添加不会增加可用额度。请改用另一个 DeepAI 账号。", e.UID)
 		}
 	}
 
@@ -1902,26 +1912,11 @@ func (a *App) persistDeepAIAccount(apiKey, username string, isPro bool) (string,
 	if machine == "" {
 		machine = deepai.NewUUID()
 	}
-	extra := map[string]string{}
 	if username != "" {
 		extra[deepai.ExtraUsername] = username
 	}
 	if isPro {
 		extra[deepai.ExtraIsPro] = "true"
-	}
-	if prevMachine != "" {
-		// 保留代理等其它 Extra 键（票 06 写入的出口配置不得因重贴凭据丢失）。
-		for _, e := range existing {
-			if e.UID != uid {
-				continue
-			}
-			for k, v := range e.Extra {
-				if k == deepai.ExtraUsername || k == deepai.ExtraIsPro {
-					continue
-				}
-				extra[k] = v
-			}
-		}
 	}
 	ca := &auth.Auth{
 		Kind:        provider.DeepAI.String(),
