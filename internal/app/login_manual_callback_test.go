@@ -29,6 +29,7 @@ func TestManualCallbackKindWhitelist(t *testing.T) {
 		provider.TraeWork:  true,  // 回调写死 127.0.0.1 随机端口 + 5 分钟监听寿命（issue #98）
 		provider.QwenWork:  false, // 设备流（/device/selectAccounts + deviceToken/poll），无回调
 		provider.Gemini:    true,  // installed-app 政策限 redirect host 为 localhost，不可改
+		provider.DeepAI:    true,  // desktop_auth 的回调写死 http://127.0.0.1:<port>/auth-callback（R104）
 		provider.GLM:       false, // 网关侧 CDP 捕获
 		provider.Raccoon:   false, // 网关侧 CDP 捕获
 		provider.OfficeAce: false, // 云端轮询捕获
