@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 
 	"wild-work/internal/auth"
@@ -20,20 +21,43 @@ import (
 // `stream_options` 时补 `{include_usage:true}`。上游的非流式面会撞 Cloudflare 100s 上限
 // （实测 524），强制流式反而更稳：非流式客户端由 handler 用 Aggregate 还原成 JSON。
 //
-// 超时口径（R35/R118）：流式走 StreamHTTP（**不设**总超时），拿不到响应头之前由
-// 非流式的 `upstream.timeout_seconds` 之外的传输层兜底；拿到响应头之后由 90s 空闲
+// 形状兜底（spec §3.5）：上游把「不像桌面端发的请求」拒成 400 时，按桌面端字段白名单重排
+// 并在**缺** system 时补一条，**同一账号同一请求内重试恰好一次**；第二次仍失败就把第二个
+// 错误体原样回传（首因进日志，不吞、不反复重试）。
+//
+// 超时口径（R35/R118）：流式走 StreamHTTP（**不设**总超时），拿到响应头之后由 90s 空闲
 // 看门狗兜底。传输层错误**原样返回 error**（不计账号错误、不换号：同渠道所有账号打同一
 // host，网络问题与账号健康无关）。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []byte, error) {
 	prepared := upstream.PrepareBody(body)
-	peek := peekChat(prepared)
-	req, err := c.newRequest(context.Background(), http.MethodPost, PathChat, a, prepared, affinityOf(a, prepared))
+	stream := peekChat(prepared).Stream
+	affinity := affinityOf(a, prepared)
+
+	rc, status, errBody, err := c.chatOnce(a, prepared, stream, affinity)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if reason := shapeRejectReason(status, errBody); reason != "" {
+		// 首因必须留痕：否则「第一次被拒过一次」这件事在生产日志里完全不可见。
+		log.Printf("deepai shape fallback uid=%s status=%d reason=%s", uidOf(a), status, reason)
+		return c.chatOnce(a, reshapeBody(prepared), stream, affinity)
+	}
+	if hint := hintFor(status, errBody); hint != "" {
+		// 车道失配 / 漏发机器指纹这类「要人动手」的错误，日志必须醒目且带 uid。
+		log.Printf("deepai chat rejected uid=%s status=%d %s err=%s", uidOf(a), status, hint, errorMessage(errBody))
+	}
+	return rc, status, errBody, nil
+}
+
+// chatOnce 发一次对话请求（不含任何重试逻辑）。
+func (c *Client) chatOnce(a *auth.Auth, body []byte, stream bool, affinity string) (io.ReadCloser, int, []byte, error) {
+	req, err := c.newRequest(context.Background(), http.MethodPost, PathChat, a, body, affinity)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	req, cancel := idle.WithCancel(req)
 	hc := c.HTTP
-	if peek.Stream && c.StreamHTTP != nil {
+	if stream && c.StreamHTTP != nil {
 		hc = c.StreamHTTP
 	}
 	resp, err := hc.Do(req)
@@ -53,19 +77,17 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []by
 	return idle.Monitor(resp.Body, c.IdleTimeout(), cancel), resp.StatusCode, nil, nil
 }
 
-// Stream 逐帧转发上游 SSE，并把每帧的 `model` 回填成客户端请求的全串。
-//
-// 为什么必须回填（provider.go 的 Stream 契约）：上游回的常是裸名，客户端看到
-// `deepai/gpt-6-luna` 变成 `gpt-6-luna` 会以为模型被换掉了。回填只发生在**确实需要改**
-// 的帧上，其余字节逐帧透传（含 `[DONE]`、注释帧、`event:` 帧、usage 末帧）。
+// Stream 逐帧转发上游 SSE：回填 `model`（客户端全串）与 `reasoning_content`（下游只认
+// 这个字段，见 gateway/chat_sse.go），其余内容逐字节透传。
 func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
 	var usage map[string]any
 	err := upstream.StreamCapture(w, rewriteModelReader(r, model), func(u map[string]any) { usage = u })
 	return usage, err
 }
 
-// Aggregate 非流式：上游若回普通 JSON 就解成 map 并回填 model；若回的是 SSE
-// （客户端发 `stream=false` 但管线强制流式）就聚合 SSE 帧还原成一条完整回答。
+// Aggregate 非流式：上游若回普通 JSON 就解成 map；若回的是 SSE（客户端发 `stream=false`
+// 但管线强制流式）就聚合 SSE 帧还原成一条完整回答。两条路径都回填 `model` 与
+// `message.reasoning_content`。
 func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	for {
@@ -83,10 +105,7 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 			if err := json.NewDecoder(br).Decode(&resp); err != nil {
 				return nil, err
 			}
-			if model != "" {
-				resp["model"] = model
-			}
-			return resp, nil
+			return finalizeAggregate(resp, model), nil
 		}
 		break
 	}
@@ -94,23 +113,74 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return finalizeAggregate(resp, model), nil
+}
+
+// finalizeAggregate 回填 model 与 `message.reasoning_content`（已有则不覆盖）。
+func finalizeAggregate(resp map[string]any, model string) map[string]any {
+	if resp == nil {
+		return resp
+	}
 	if model != "" {
 		resp["model"] = model
 	}
-	return resp, nil
+	choices, _ := resp["choices"].([]any)
+	for _, ch := range choices {
+		choice, ok := ch.(map[string]any)
+		if !ok {
+			continue
+		}
+		msg, ok := choice["message"].(map[string]any)
+		if !ok {
+			continue
+		}
+		backfillReasoningContent(msg)
+	}
+	return resp
 }
 
-// rewriteModelReader 包一层「逐行改写 model 字段」的 reader（model 为空时原样返回）。
-func rewriteModelReader(r io.Reader, model string) io.Reader {
-	if model == "" {
-		return r
+// backfillReasoningContent 把 `reasoning` 复制一份到 `reasoning_content`（**已有不覆盖**）。
+//
+// 为什么需要：上游把思考链放在 `reasoning`，而本仓兼容层（gateway/chat_sse.go）只认
+// `reasoning_content`——不补这一份，Claude Code 一类客户端看不到任何思考内容。
+// 只在「reasoning 是非空字符串 且 reasoning_content 不存在」时才写，绝不改语义。
+func backfillReasoningContent(container map[string]any) {
+	if container == nil {
+		return
 	}
-	return &modelRewriter{src: bufio.NewReaderSize(r, 64*1024), model: model}
+	if _, has := container["reasoning_content"]; has {
+		return
+	}
+	switch v := container["reasoning"].(type) {
+	case string:
+		if v != "" {
+			container["reasoning_content"] = v
+		}
+	}
+}
+
+// rewriteModelReader 包一层「逐行改写」的 reader（model 为空时逻辑照跑：
+// 只补 reasoning_content，不回填 model）。
+func rewriteModelReader(r io.Reader, model string) io.Reader {
+	return &modelRewriter{src: bufio.NewReaderSize(r, 64*1024), model: model, want: quotedJSON(model)}
+}
+
+// quotedJSON 把字符串编码成 JSON 字面量（一次算好，逐帧复用）；空串返回 nil。
+func quotedJSON(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 type modelRewriter struct {
 	src     *bufio.Reader
 	model   string
+	want    []byte // quotedJSON(model)，逐帧复用（避免每帧一次 Marshal）
 	pending []byte
 }
 
@@ -118,7 +188,7 @@ func (m *modelRewriter) Read(p []byte) (int, error) {
 	for len(m.pending) == 0 {
 		line, err := m.src.ReadBytes('\n')
 		if len(line) > 0 {
-			m.pending = rewriteModelLine(line, m.model)
+			m.pending = rewriteFrame(line, m.want)
 		}
 		if err != nil {
 			if len(m.pending) == 0 {
@@ -132,16 +202,21 @@ func (m *modelRewriter) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// rewriteModelLine 改写一行 SSE 里 `data:` 负载的 `model` 字段。
+// rewriteModelLine 是 rewriteFrame 的「按模型名」入口（单测与调试用）。
+func rewriteModelLine(line []byte, model string) []byte {
+	return rewriteFrame(line, quotedJSON(model))
+}
+
+// rewriteFrame 改写一行 SSE 里 `data:` 负载：回填 `model`、补 `reasoning_content`。
 //
-// 只动**对话增量帧**（负载是 JSON 且含顶层 `choices`）：`[DONE]`、`event:` 行、
-// 空行、非 JSON 负载一律原样返回；帧里 `model` 已是目标值也原样返回（字节级透传）。
-// 需要改写时才重新序列化该帧——同帧其它字段的**值**不变（`json.RawMessage` 保留
-// 原始字节），只有键序与空白被规范化，客户端解析结果完全一致。
+// 只动**对话增量帧**（负载是 JSON 且含顶层 `choices`）：`[DONE]`、`event:` 行、空行、
+// 非 JSON 负载一律原样返回；**不需要改写时返回原始字节切片**（零保真损失：字节级透传）。
+// 需要改写时才重新序列化该帧——同帧其它字段的**值**不变（`json.RawMessage` 保留原始
+// 字节），只有键序与空白被规范化，客户端解析结果完全一致。
 //
 // 不用「字符串替换 `"model":"…"`」的做法：`model` 也可能出现在 tool arguments 里
 // （`"model": "x"`），字符串替换会改坏工具参数。
-func rewriteModelLine(line []byte, model string) []byte {
+func rewriteFrame(line []byte, want []byte) []byte {
 	trimmed := bytes.TrimRight(line, "\r\n")
 	tail := line[len(trimmed):]
 	var payload []byte
@@ -164,14 +239,20 @@ func rewriteModelLine(line []byte, model string) []byte {
 	if _, ok := obj["choices"]; !ok {
 		return line
 	}
-	want, err := json.Marshal(model)
-	if err != nil {
+	changed := false
+	if want != nil {
+		if cur, ok := obj["model"]; !ok || !bytes.Equal(bytes.TrimSpace(cur), want) {
+			obj["model"] = want
+			changed = true
+		}
+	}
+	if fixed, ok := backfillFrameReasoning(obj); ok {
+		obj["choices"] = fixed
+		changed = true
+	}
+	if !changed {
 		return line
 	}
-	if cur, ok := obj["model"]; ok && bytes.Equal(bytes.TrimSpace(cur), want) {
-		return line
-	}
-	obj["model"] = want
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return line
@@ -181,4 +262,60 @@ func rewriteModelLine(line []byte, model string) []byte {
 	buf = append(buf, out...)
 	buf = append(buf, tail...)
 	return buf
+}
+
+// backfillFrameReasoning 给每个 choice 的 `delta` 补 `reasoning_content`（已有不覆盖）。
+//
+// 返回改写后的 choices 原文与「是否改动」；未改动时调用方应保持整帧字节不变。
+func backfillFrameReasoning(obj map[string]json.RawMessage) (json.RawMessage, bool) {
+	rawChoices, ok := obj["choices"]
+	if !ok {
+		return nil, false
+	}
+	var choices []map[string]json.RawMessage
+	if err := json.Unmarshal(rawChoices, &choices); err != nil {
+		return nil, false
+	}
+	changed := false
+	for _, ch := range choices {
+		rawDelta, ok := ch["delta"]
+		if !ok {
+			continue
+		}
+		var delta map[string]json.RawMessage
+		if err := json.Unmarshal(rawDelta, &delta); err != nil {
+			continue
+		}
+		if _, has := delta["reasoning_content"]; has {
+			continue // 上游已给：绝不覆盖
+		}
+		reasoning, has := delta["reasoning"]
+		if !has || !isNonEmptyJSONString(reasoning) {
+			continue
+		}
+		delta["reasoning_content"] = bytes.TrimSpace(reasoning)
+		merged, err := json.Marshal(delta)
+		if err != nil {
+			continue
+		}
+		ch["delta"] = merged
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	merged, err := json.Marshal(choices)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
+// isNonEmptyJSONString 判断一段 JSON 原文是否为「非空字符串字面量」。
+func isNonEmptyJSONString(raw json.RawMessage) bool {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return false
+	}
+	return s != ""
 }

@@ -147,3 +147,13 @@ func textOfContent(raw json.RawMessage) string {
 	}
 	return strings.TrimSpace(b.String())
 }
+
+// uidOf 锁内取 uid（日志用；零凭据口径只允许打 uid）。
+func uidOf(a *auth.Auth) string {
+	if a == nil {
+		return ""
+	}
+	a.RLock()
+	defer a.RUnlock()
+	return a.UID
+}

@@ -2,6 +2,7 @@ package deepai
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -245,5 +246,134 @@ func TestChatStreamRedirectIsErrorStatus(t *testing.T) {
 	}
 	if got := c.Classify(status, string(errBody)).String(); got != "session_dead" {
 		t.Fatalf("302 应归 session_dead，got %s", got)
+	}
+}
+
+// ---- 票 03：思考链补写（reasoning → reasoning_content）----
+
+// TestFrameBackfillsReasoningContent delta.reasoning 非空且无 reasoning_content ⇒ 补一份。
+func TestFrameBackfillsReasoningContent(t *testing.T) {
+	in := []byte(`data: {"choices":[{"index":0,"delta":{"reasoning":"先想一步"}}]}` + "\n")
+	out := rewriteModelLine(in, "deepai/glm-5.3-flash")
+	if !bytes.Contains(out, []byte(`"reasoning_content":"先想一步"`)) {
+		t.Fatalf("未补 reasoning_content：%s", out)
+	}
+	// 原字段必须保留（下游可能也读它；覆盖语义不是本票的事）。
+	if !bytes.Contains(out, []byte(`"reasoning":"先想一步"`)) {
+		t.Fatalf("原 reasoning 被删：%s", out)
+	}
+	// model 同时回填。
+	if !bytes.Contains(out, []byte(`"model":"deepai/glm-5.3-flash"`)) {
+		t.Fatalf("model 未回填：%s", out)
+	}
+	if !bytes.HasSuffix(out, []byte("\n")) {
+		t.Fatal("行尾换行丢失（SSE 帧会粘连）")
+	}
+}
+
+// TestFrameDoesNotOverwriteExistingReasoningContent 上游已给 reasoning_content ⇒ 绝不覆盖。
+func TestFrameDoesNotOverwriteExistingReasoningContent(t *testing.T) {
+	in := []byte(`data: {"model":"deepai/glm-5.3-flash","choices":[{"delta":{"reasoning":"上游的","reasoning_content":"已有的"}}]}` + "\n")
+	out := rewriteModelLine(in, "deepai/glm-5.3-flash")
+	if string(out) != string(in) {
+		t.Fatalf("无需改写的帧必须逐字节透传，实际：%s", out)
+	}
+}
+
+// TestFrameIgnoresEmptyOrNonStringReasoning 空串 / 非字符串的 reasoning 不补（不编造内容）。
+func TestFrameIgnoresEmptyOrNonStringReasoning(t *testing.T) {
+	for _, delta := range []string{`{"reasoning":""}`, `{"reasoning":null}`, `{"reasoning":["x"]}`} {
+		in := []byte(`data: {"model":"deepai/x","choices":[{"delta":` + delta + `}]}` + "\n")
+		if out := rewriteModelLine(in, "deepai/x"); string(out) != string(in) {
+			t.Fatalf("delta=%s 被改写成 %s（不得编造 reasoning_content）", delta, out)
+		}
+	}
+}
+
+// TestFrameNonReasoningFrameByteIdentical 不含 reasoning 的普通帧（model 已正确）逐字节透传。
+func TestFrameNonReasoningFrameByteIdentical(t *testing.T) {
+	in := []byte(`data: {"model":"deepai/x",  "choices":[{"delta":{"content":"hi"}}]}` + "\r\n")
+	if out := rewriteModelLine(in, "deepai/x"); string(out) != string(in) {
+		t.Fatalf("普通帧被改写：%q", string(out))
+	}
+}
+
+// TestStreamEndToEndReasoningBackfill 端到端：SSE 里的 reasoning 帧对下游可见为
+// reasoning_content，且 [DONE] 依然原样。
+func TestStreamEndToEndReasoningBackfill(t *testing.T) {
+	srv := sseReturn("data: {\"choices\":[{\"delta\":{\"reasoning\":\"思考\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\ndata: [DONE]\n\n")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	if _, err := New().Stream(rec, resp.Body, "deepai/glm-5.3-flash"); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `"reasoning_content":"思考"`) {
+		t.Fatalf("下游看不到思考内容：%s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("[DONE] 丢失：%s", out)
+	}
+}
+
+// TestAggregateBackfillsReasoning 非流式：message.reasoning → message.reasoning_content。
+func TestAggregateBackfillsReasoning(t *testing.T) {
+	// JSON 形态
+	jsonBody := `{"id":"gen-1","model":"glm-5.3-flash","choices":[{"message":{"role":"assistant","content":"答","reasoning":"想"}}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, jsonBody)
+	}))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	out, err := New().Aggregate(resp.Body, "deepai/glm-5.3-flash")
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	msg := out["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if msg["reasoning_content"] != "想" {
+		t.Fatalf("JSON 聚合未补 reasoning_content：%+v", msg)
+	}
+	if out["model"] != "deepai/glm-5.3-flash" {
+		t.Fatalf("model 未回填：%v", out["model"])
+	}
+
+	// SSE 形态（管线强制流式 ⇒ 非流式客户端也会拿到 SSE）
+	sse := sseReturn("data: {\"choices\":[{\"delta\":{\"reasoning\":\"想\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\ndata: [DONE]\n\n")
+	defer sse.Close()
+	resp2, err := http.Get(sse.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp2.Body.Close()
+	out2, err := New().Aggregate(resp2.Body, "deepai/glm-5.3-flash")
+	if err != nil {
+		t.Fatalf("Aggregate(SSE): %v", err)
+	}
+	msg2 := out2["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if msg2["reasoning_content"] != "想" {
+		t.Fatalf("SSE 聚合未补 reasoning_content：%+v", msg2)
+	}
+}
+
+// TestAggregateKeepsExistingReasoningContent 聚合也不覆盖上游已给的 reasoning_content。
+func TestAggregateKeepsExistingReasoningContent(t *testing.T) {
+	resp := map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{"reasoning": "上游", "reasoning_content": "已有"},
+		}},
+	}
+	finalizeAggregate(resp, "deepai/x")
+	msg := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if msg["reasoning_content"] != "已有" {
+		t.Fatalf("覆盖了已有的 reasoning_content：%v", msg["reasoning_content"])
 	}
 }
